@@ -1,6 +1,6 @@
-# Daily Market Analysis Tool (Alpha Vantage)
+# Daily Market Analysis App
 
-A Shiny app for daily market analysis, separate from the Crime Analysis project. Data is fetched from the Alpha Vantage API.
+A Shiny app for daily market analysis. Data is fetched from the Alpha Vantage API.
 
 ## Files
 
@@ -20,7 +20,7 @@ install.packages(c("shiny", "httr2", "jsonlite", "ggplot2", "DT", "dplyr"))
 
 If `httr2` is not installed, the app automatically falls back to `httr`.
 
-## Step‑by‑step setup (reproduce the app)
+## Setup:
 
 1. **Clone or copy the project**
    - Put all files (including `.env`, `app_market.R`, `run_market.R`) in a folder, for example `5381tool1`.
@@ -35,7 +35,6 @@ If `httr2` is not installed, the app automatically falls back to `httr`.
      OLLAMA_CLOUD_API_KEY=your_ollama_key_here
      ```
 
-   - Keep `.env` private; it should not be committed to git.
 
 3. **Open R or RStudio and set the working directory**
 

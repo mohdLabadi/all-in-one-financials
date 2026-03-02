@@ -12,35 +12,49 @@ A Shiny app for daily market analysis, separate from the Crime Analysis project.
 
 ## Dependencies
 
-Install in R:
+Install these R packages once:
 
 ```r
 install.packages(c("shiny", "httr2", "jsonlite", "ggplot2", "DT", "dplyr"))
 ```
 
-If `httr2` is not installed, the app falls back to `httr`.
+If `httr2` is not installed, the app automatically falls back to `httr`.
 
-## How to run
+## Step‑by‑step setup (reproduce the app)
 
-**Option 1 (recommended)** – From R or RStudio, with working directory set to the folder that contains `app_market.R` and `.env`:
+1. **Clone or copy the project**
+   - Put all files (including `.env`, `app_market.R`, `run_market.R`) in a folder, for example `5381tool1`.
 
-```r
-setwd("C:/Users/10543/OneDrive/Desktop/cornell_courses/5831/tool 1")  # adjust path as needed
-source("run_market.R")
-```
+2. **Create `.env` and add keys**
+   - Get a **free Alpha Vantage key** from `https://www.alphavantage.co/support/#api-key`.
+   - Get an **Ollama Cloud key** from `https://ollama.com/settings/keys`.
+   - In the project folder, create a file named `.env` with:
 
-**Option 2** – Run the app file directly:
+     ```text
+     ALPHAVANTAGE_API_KEY=your_alpha_key_here
+     OLLAMA_CLOUD_API_KEY=your_ollama_key_here
+     ```
 
-```r
-setwd("C:/Users/10543/OneDrive/Desktop/cornell_courses/5831/tool 1")
-shiny::runApp("app_market.R", launch.browser = TRUE)
-```
+   - Keep `.env` private; it should not be committed to git.
 
-**Option 3** – From the command line (from the project directory):
+3. **Open R or RStudio and set the working directory**
 
-```bash
-R -e "setwd('tool 1'); source('run_market.R')"
-```
+   ```r
+   setwd("/path/to/5381tool1")  # adjust the path for your machine
+   source("run_market.R")
+   ```
+
+   This launches the Shiny app in your browser.
+
+4. **Use the app**
+   - Choose a section in the sidebar (e.g. `Stock Daily`, `Top Gainers/Losers`, `News & Sentiment`, `Forex`, etc.).
+   - Enter any inputs (symbol, currencies, etc.) and click **Fetch** to load data.
+   - Use the toolbar to change the view, filter results, or **Download CSV**. These actions reuse already-fetched data (no extra API calls).
+
+5. **Try the AI Reporter (Ollama Cloud)**
+   - Go to the **AI Reporter** section.
+   - Optionally first fetch some data (e.g. gainers or news) to give the AI more context.
+   - Click **Generate report** to get a short AI-written summary. This uses only `OLLAMA_CLOUD_API_KEY` (it does not consume your Alpha Vantage quota).
 
 ## Sections
 

@@ -382,30 +382,75 @@ ui <- fluidPage(
     sidebarPanel(class = "sidebar", width = 3,
       selectInput("section", "Section",
         choices = c("Stock Daily" = "stock", "Top Gainers/Losers" = "gainers", "News & Sentiment" = "news", "Forex" = "forex",
-          "Currency Exchange Rate" = "currency_rate", "Commodities" = "commodity", "Economic Indicators" = "economic", "AI Reporter" = "ai_reporter"),
+          "Commodities" = "commodity", "Economic Indicators" = "economic"),
         selected = "stock"),
-      conditionalPanel("input.section == 'stock'", textInput("stock_symbol", "Symbol", value = "AAPL", placeholder = "e.g. AAPL, MSFT"), actionButton("fetch_stock", "Fetch", class = "btn-primary")),
+      conditionalPanel("input.section == 'stock'", textInput("stock_symbol", "Symbol", value = "AAPL", placeholder = "e.g. AAPL, MSFT"), checkboxInput("stock_full_history", "Full history (for 1-year trend)", value = FALSE), actionButton("fetch_stock", "Fetch", class = "btn-primary")),
       conditionalPanel("input.section == 'gainers'", actionButton("fetch_gainers", "Fetch movers", class = "btn-primary")),
       conditionalPanel("input.section == 'news'", textInput("news_tickers", "Tickers (optional)", placeholder = "AAPL, MSFT"), numericInput("news_limit", "Limit", value = 20, min = 1, max = 50), actionButton("fetch_news", "Fetch news", class = "btn-primary")),
       conditionalPanel("input.section == 'forex'", textInput("fx_from", "From", value = "EUR"), textInput("fx_to", "To", value = "USD"), actionButton("fetch_fx", "Fetch", class = "btn-primary")),
-      conditionalPanel("input.section == 'currency_rate'", textInput("curr_from", "From", value = "USD"), textInput("curr_to", "To", value = "EUR"), actionButton("fetch_currency_rate", "Get rate", class = "btn-primary")),
       conditionalPanel("input.section == 'commodity'", selectInput("commodity", "Commodity", choices = c("WHEAT" = "WHEAT", "CORN" = "CORN", "WTI" = "WTI", "BRENT" = "BRENT", "NATURAL_GAS" = "NATURAL_GAS", "COPPER" = "COPPER", "COFFEE" = "COFFEE")), selectInput("commodity_interval", "Interval", choices = c("daily", "weekly", "monthly"), selected = "monthly"), actionButton("fetch_commodity", "Fetch", class = "btn-primary")),
       conditionalPanel("input.section == 'economic'", selectInput("economic_indicator", "Indicator", choices = c("CPI" = "CPI", "INFLATION" = "INFLATION", "UNEMPLOYMENT" = "UNEMPLOYMENT", "FEDERAL_FUNDS_RATE" = "FEDERAL_FUNDS_RATE", "TREASURY_YIELD" = "TREASURY_YIELD", "REAL_GDP" = "REAL_GDP", "RETAIL_SALES" = "RETAIL_SALES", "NONFARM_PAYROLL" = "NONFARM_PAYROLL")), selectInput("economic_interval", "Interval", choices = c("monthly", "quarterly", "annual", "daily"), selected = "monthly"), actionButton("fetch_economic", "Fetch", class = "btn-primary")),
-      conditionalPanel("input.section == 'ai_reporter'", NULL),
       hr(), checkboxInput("show_raw_data", "Show data tables", value = FALSE)
     ),
     mainPanel(class = "main-content", width = 9,
-      uiOutput("section_title"),
-      p("Select a section and click Fetch to load data. View, filter, and Download use already-loaded data (no extra API calls).", class = "api-limit-note"),
-      uiOutput("api_error_ui"),
-      conditionalPanel("input.section == 'stock'", uiOutput("ui_stock_toolbar"), uiOutput("ui_stock_summary"), div(class = "plot-container", plotOutput("plot_stock")), conditionalPanel("input.show_raw_data", DT::dataTableOutput("table_stock"))),
-      conditionalPanel("input.section == 'gainers'", uiOutput("ui_gainers_toolbar"), uiOutput("ui_gainers_cards"), uiOutput("ui_gainers_chart"), conditionalPanel("input.show_raw_data", h4("Top Gainers"), DT::dataTableOutput("table_gainers"), h4("Top Losers"), DT::dataTableOutput("table_losers"), h4("Most Active"), DT::dataTableOutput("table_active"))),
-      conditionalPanel("input.section == 'news'", uiOutput("ui_news_toolbar"), uiOutput("ui_news_cards"), conditionalPanel("input.show_raw_data", DT::dataTableOutput("table_news"))),
-      conditionalPanel("input.section == 'forex'", uiOutput("ui_fx_toolbar"), uiOutput("ui_fx_summary"), div(class = "plot-container", plotOutput("plot_fx")), conditionalPanel("input.show_raw_data", DT::dataTableOutput("table_fx"))),
-      conditionalPanel("input.section == 'currency_rate'", uiOutput("ui_currency_rate"), conditionalPanel("input.show_raw_data", DT::dataTableOutput("table_currency_rate"))),
-      conditionalPanel("input.section == 'commodity'", uiOutput("ui_commodity_toolbar"), uiOutput("ui_commodity_summary"), div(class = "plot-container", plotOutput("plot_commodity")), conditionalPanel("input.show_raw_data", DT::dataTableOutput("table_commodity"))),
-      conditionalPanel("input.section == 'economic'", uiOutput("ui_economic_toolbar"), uiOutput("ui_economic_summary"), div(class = "plot-container", plotOutput("plot_economic")), conditionalPanel("input.show_raw_data", DT::dataTableOutput("table_economic"))),
-      conditionalPanel("input.section == 'ai_reporter'", uiOutput("ui_ai_reporter"))
+      fluidRow(
+        column(
+          width = 8,
+          uiOutput("section_title"),
+          p("Select a section and click Fetch to load data. View, filter, and Download use already-loaded data (no extra API calls).", class = "api-limit-note"),
+          uiOutput("api_error_ui"),
+          conditionalPanel(
+            "input.section == 'stock'",
+            uiOutput("ui_stock_toolbar"),
+            uiOutput("ui_stock_summary"),
+            div(class = "plot-container", plotOutput("plot_stock")),
+            conditionalPanel("input.show_raw_data", DT::dataTableOutput("table_stock"))
+          ),
+          conditionalPanel(
+            "input.section == 'gainers'",
+            uiOutput("ui_gainers_toolbar"),
+            uiOutput("ui_gainers_cards"),
+            uiOutput("ui_gainers_chart"),
+            conditionalPanel(
+              "input.show_raw_data",
+              h4("Top Gainers"), DT::dataTableOutput("table_gainers"),
+              h4("Top Losers"), DT::dataTableOutput("table_losers"),
+              h4("Most Active"), DT::dataTableOutput("table_active")
+            )
+          ),
+          conditionalPanel(
+            "input.section == 'news'",
+            uiOutput("ui_news_toolbar"),
+            uiOutput("ui_news_cards"),
+            conditionalPanel("input.show_raw_data", DT::dataTableOutput("table_news"))
+          ),
+          conditionalPanel(
+            "input.section == 'forex'",
+            uiOutput("ui_fx_toolbar"),
+            uiOutput("ui_fx_summary"),
+            div(class = "plot-container", plotOutput("plot_fx")),
+            conditionalPanel("input.show_raw_data", DT::dataTableOutput("table_fx"))
+          ),
+          conditionalPanel(
+            "input.section == 'commodity'",
+            uiOutput("ui_commodity_toolbar"),
+            uiOutput("ui_commodity_summary"),
+            div(class = "plot-container", plotOutput("plot_commodity")),
+            conditionalPanel("input.show_raw_data", DT::dataTableOutput("table_commodity"))
+          ),
+          conditionalPanel(
+            "input.section == 'economic'",
+            uiOutput("ui_economic_toolbar"),
+            uiOutput("ui_economic_summary"),
+            div(class = "plot-container", plotOutput("plot_economic")),
+            conditionalPanel("input.show_raw_data", DT::dataTableOutput("table_economic"))
+          )
+        ),
+        column(
+          width = 4,
+          uiOutput("ui_ai_reporter")
+        )
+      )
     )
   )
 )
@@ -427,7 +472,14 @@ server <- function(input, output, session) {
   set_err <- function(e) err_msg(paste0("Error: ", conditionMessage(e)))
 
   output$section_title <- renderUI({
-    titles <- c(stock = "Stock Daily", gainers = "Top Gainers/Losers", news = "News & Sentiment", forex = "Forex", currency_rate = "Currency Exchange Rate", commodity = "Commodities", economic = "Economic Indicators", ai_reporter = "AI Reporter")
+    titles <- c(
+      stock = "Stock Daily",
+      gainers = "Top Gainers/Losers",
+      news = "News & Sentiment",
+      forex = "Forex",
+      commodity = "Commodities",
+      economic = "Economic Indicators"
+    )
     tit <- titles[input$section]
     if (is.null(tit) || length(tit) == 0L || (length(tit) == 1L && is.na(tit))) tit <- input$section
     h3(tit, style = "margin-top: 0; color: var(--text);")
@@ -444,7 +496,8 @@ server <- function(input, output, session) {
     tryCatch({
       sym <- trimws(input$stock_symbol %||% "")
       if (length(sym) == 0L || !nzchar(sym)) { set_err(simpleError("Please enter a symbol.")); return() }
-      df <- av_stock_daily(sym)
+      outsize <- if (isTRUE(input$stock_full_history)) "full" else "compact"
+      df <- av_stock_daily(sym, outputsize = outsize)
       if (is.null(df) || nrow(df) == 0) {
         set_err(simpleError("No data returned. Check API key, symbol, or rate limit (5/min, 25/day)."))
         stock_df(NULL)
@@ -726,22 +779,105 @@ server <- function(input, output, session) {
   output$download_economic_csv <- downloadHandler(filename = function() paste0("economic_", input$economic_indicator %||% "", "_", Sys.Date(), ".csv"), content = function(file) { df <- economic_df(); if (!is.null(df) && nrow(df) > 0) write.csv(df, file, row.names = FALSE) })
 
   # ---- AI Reporter ----
+  report_choices <- reactive({
+    switch(
+      input$section,
+      stock = c("Brief on current data" = "brief", "Stock snapshot" = "stock", "Stock trend (day/week/month/year)" = "stock_trend"),
+      gainers = c("Top movers insight" = "movers"),
+      news = c("News briefing" = "news"),
+      forex = c("Brief on current forex data" = "forex_brief", "Forex snapshot" = "forex_snapshot", "Forex trend (day/week/month/year)" = "forex_trend"),
+      commodity = c("Brief on current commodity data" = "commodity_brief", "Commodity snapshot" = "commodity_snapshot", "Commodity trend (day/week/month/year)" = "commodity_trend"),
+      economic = c("Brief on indicator data" = "economic_brief", "Indicator snapshot" = "economic_snapshot", "Indicator trend (day/week/month/year)" = "economic_trend"),
+      c("Brief on current data" = "brief")
+    )
+  })
   build_ai_context <- function(report_type) {
     parts <- character(0)
     if (report_type %in% c("movers", "brief")) { d <- gainers_data(); if (!is.null(d) && is.data.frame(d$top_gainers) && nrow(d$top_gainers) > 0) { g <- head(d$top_gainers, 5); nn <- tolower(gsub("[^a-z0-9]", "", names(g))); tk <- names(g)[match("ticker", nn)]; if (is.na(tk)) tk <- names(g)[1]; parts <- c(parts, paste0("Top gainers (sample): ", paste(g[[tk]], collapse = ", "))) }; if (!is.null(d) && is.data.frame(d$top_losers) && nrow(d$top_losers) > 0) { L <- head(d$top_losers, 5); nn <- tolower(gsub("[^a-z0-9]", "", names(L))); tk <- names(L)[match("ticker", nn)]; if (is.na(tk)) tk <- names(L)[1]; parts <- c(parts, paste0("Top losers (sample): ", paste(L[[tk]], collapse = ", "))) } }
     if (report_type %in% c("news", "brief")) { nw <- news_df(); if (!is.null(nw) && nrow(nw) > 0) parts <- c(parts, paste0("Recent headlines: ", paste(head(as.character(nw$title), 8), collapse = " | "))) }
     if (report_type %in% c("stock", "brief")) { st <- stock_df(); if (!is.null(st) && nrow(st) > 0) parts <- c(parts, sprintf("Latest stock: close %.2f, high %.2f, low %.2f", st$close[1], st$high[1] %||% NA, st$low[1] %||% NA)) }
-    if (length(parts) == 0) return("No market data fetched yet. Fetch Stock, Gainers, or News first."); paste(parts, collapse = "\n\n")
+    if (report_type %in% c("forex_brief", "forex_snapshot")) { fx <- fx_df(); if (!is.null(fx) && nrow(fx) > 0) parts <- c(parts, sprintf("Forex %s/%s: latest close %.4f, high %.4f, low %.4f (over %d days)", input$fx_from %||% "From", input$fx_to %||% "To", as.numeric(fx$close[1]), max(as.numeric(fx$close), na.rm = TRUE), min(as.numeric(fx$close), na.rm = TRUE), nrow(fx))) }
+    if (report_type %in% c("commodity_brief", "commodity_snapshot")) { co <- commodity_df(); if (!is.null(co) && nrow(co) > 0) { ycol <- if ("value" %in% names(co)) "value" else names(co)[2]; v <- as.numeric(co[[ycol]]); v <- v[is.finite(v)]; if (length(v) > 0) parts <- c(parts, sprintf("Commodity %s: latest %.2f, period min %.2f, max %.2f (%d points)", input$commodity %||% "", v[1], min(v), max(v), nrow(co))) } }
+    if (report_type %in% c("economic_brief", "economic_snapshot")) { ec <- economic_df(); if (!is.null(ec) && nrow(ec) > 0) { ycol <- if ("value" %in% names(ec)) "value" else names(ec)[2]; v <- as.numeric(ec[[ycol]]); v <- v[is.finite(v)]; if (length(v) > 0) parts <- c(parts, sprintf("Indicator %s: latest %.4f, period min %.4f, max %.4f (%d points)", input$economic_indicator %||% "", v[1], min(v), max(v), nrow(ec))) } }
+    if (length(parts) == 0) return("No data for this section yet. Fetch data in the current section first."); paste(parts, collapse = "\n\n")
   }
+  build_stock_trend_report <- function() {
+    st <- stock_df(); if (is.null(st) || nrow(st) == 0) return("Fetch stock data first (Stock Daily section).")
+    sym <- input$stock_symbol %||% "Stock"; current <- as.numeric(st$close[1]); if (!is.finite(current)) return("No valid price data.")
+    lines <- c(paste0("Stock trend: ", sym), paste0("Current close: $", sprintf("%.2f", current)), "")
+    fmt_chg <- function(pct) if (pct >= 0) paste0("+", sprintf("%.2f", pct), "%") else sprintf("%.2f", pct)
+    if (nrow(st) >= 2L) { prev <- as.numeric(st$close[2]); if (is.finite(prev) && prev != 0) lines <- c(lines, paste0("Since yesterday:  ", fmt_chg(100 * (current - prev) / prev), " (was $", sprintf("%.2f", prev), ")")) }
+    if (nrow(st) >= 6L) { prev <- as.numeric(st$close[6]); if (is.finite(prev) && prev != 0) lines <- c(lines, paste0("Since last week:   ", fmt_chg(100 * (current - prev) / prev), " (~5 trading days ago, $", sprintf("%.2f", prev), ")")) }
+    if (nrow(st) >= 22L) { prev <- as.numeric(st$close[22]); if (is.finite(prev) && prev != 0) lines <- c(lines, paste0("Since last month:  ", fmt_chg(100 * (current - prev) / prev), " (~21 trading days ago, $", sprintf("%.2f", prev), ")")) }
+    if (nrow(st) >= 253L) { prev <- as.numeric(st$close[253]); if (is.finite(prev) && prev != 0) lines <- c(lines, paste0("Since last year:   ", fmt_chg(100 * (current - prev) / prev), " (~252 trading days ago, $", sprintf("%.2f", prev), ")")) }
+    if (length(lines) < 7L) lines <- c(lines, "", paste0("Note: Data has ", nrow(st), " trading days. Use Full history for 1-year trend.")); paste(lines, collapse = "\n")
+  }
+  build_forex_trend_report <- function() {
+    fx <- fx_df(); if (is.null(fx) || nrow(fx) == 0) return("Fetch forex data first (Forex section).")
+    pair <- paste0(input$fx_from %||% "From", "/", input$fx_to %||% "To"); current <- as.numeric(fx$close[1]); if (!is.finite(current)) return("No valid rate.")
+    lines <- c(paste0("Forex trend: ", pair), paste0("Current close: ", sprintf("%.4f", current)), "")
+    fmt_chg <- function(pct) if (pct >= 0) paste0("+", sprintf("%.2f", pct), "%") else sprintf("%.2f", pct)
+    if (nrow(fx) >= 2L) { prev <- as.numeric(fx$close[2]); if (is.finite(prev) && prev != 0) lines <- c(lines, paste0("Since yesterday:  ", fmt_chg(100 * (current - prev) / prev), " (was ", sprintf("%.4f", prev), ")")) }
+    if (nrow(fx) >= 6L) { prev <- as.numeric(fx$close[6]); if (is.finite(prev) && prev != 0) lines <- c(lines, paste0("Since last week:   ", fmt_chg(100 * (current - prev) / prev), " (~5 days ago, ", sprintf("%.4f", prev), ")")) }
+    if (nrow(fx) >= 22L) { prev <- as.numeric(fx$close[22]); if (is.finite(prev) && prev != 0) lines <- c(lines, paste0("Since last month:  ", fmt_chg(100 * (current - prev) / prev), " (~21 days ago, ", sprintf("%.4f", prev), ")")) }
+    if (nrow(fx) >= 253L) { prev <- as.numeric(fx$close[253]); if (is.finite(prev) && prev != 0) lines <- c(lines, paste0("Since last year:   ", fmt_chg(100 * (current - prev) / prev), " (~252 days ago, ", sprintf("%.4f", prev), ")")) }
+    if (length(lines) < 7L) lines <- c(lines, "", paste0("Note: Data has ", nrow(fx), " days.")); paste(lines, collapse = "\n")
+  }
+  build_value_trend_report <- function(df, label, value_col) {
+    if (is.null(df) || nrow(df) == 0) return(paste0("Fetch ", label, " data first."))
+    if (is.null(value_col) || !value_col %in% names(df)) value_col <- names(df)[2]
+    current <- as.numeric(df[[value_col]][1]); if (!is.finite(current)) return("No valid value.")
+    lines <- c(paste0(label, " trend"), paste0("Current value: ", sprintf("%.4f", current)), "")
+    fmt_chg <- function(pct) if (pct >= 0) paste0("+", sprintf("%.2f", pct), "%") else sprintf("%.2f", pct)
+    if (nrow(df) >= 2L) { prev <- as.numeric(df[[value_col]][2]); if (is.finite(prev) && prev != 0) lines <- c(lines, paste0("Since previous: ", fmt_chg(100 * (current - prev) / prev), " (was ", sprintf("%.4f", prev), ")")) }
+    if (nrow(df) >= 6L) { prev <- as.numeric(df[[value_col]][6]); if (is.finite(prev) && prev != 0) lines <- c(lines, paste0("Since ~1 week ago: ", fmt_chg(100 * (current - prev) / prev), " (", sprintf("%.4f", prev), ")")) }
+    if (nrow(df) >= 22L) { prev <- as.numeric(df[[value_col]][22]); if (is.finite(prev) && prev != 0) lines <- c(lines, paste0("Since ~1 month ago: ", fmt_chg(100 * (current - prev) / prev), " (", sprintf("%.4f", prev), ")")) }
+    if (nrow(df) >= 253L) { prev <- as.numeric(df[[value_col]][253]); if (is.finite(prev) && prev != 0) lines <- c(lines, paste0("Since ~1 year ago: ", fmt_chg(100 * (current - prev) / prev), " (", sprintf("%.4f", prev), ")")) }
+    if (length(lines) < 5L) lines <- c(lines, "", paste0("Note: Data has ", nrow(df), " points.")); paste(lines, collapse = "\n")
+  }
+  observeEvent(input$section, {
+    ch <- report_choices()
+    updateSelectInput(session, "ai_report_type", choices = ch, selected = ch[1])
+  })
   output$ui_ai_reporter <- renderUI({
-    key <- ai_effective_key(); has_key <- is.character(key) && nzchar(trimws(key)); loading <- ai_loading(); report <- ai_report_text()
-    if (!has_key) return(div(class = "ai-reporter-card", div(class = "ai-title", "AI Market Reporter"), div(class = "ai-desc", "Get AI-generated market summaries. Add OLLAMA_CLOUD_API_KEY or OPENAI_API_KEY to .env and restart the app."), div(class = "ai-reporter-connect", p(style = "margin: 0; font-size: 0.9rem;", "1. Ollama Cloud: add OLLAMA_CLOUD_API_KEY to .env (get key from ", tags$a(href = "https://ollama.com/settings", target = "_blank", "ollama.com/settings"), ")."), p(style = "margin: 0.35rem 0 0 0; font-size: 0.9rem;", "2. OpenAI: add OPENAI_API_KEY=sk-... to .env."))))
-    tagList(div(class = "ai-reporter-card", div(class = "ai-title", "AI Market Reporter"), div(class = "ai-desc", "Generate a short narrative from loaded data. Fetch Gainers, News, or Stock first."), selectInput("ai_report_type", "Report type", choices = c("Brief on current data" = "brief", "Top movers insight" = "movers", "News briefing" = "news", "Stock snapshot" = "stock"), selected = "brief"), actionButton("ai_generate", "Generate report", class = "btn-primary")), if (loading) div(class = "card-custom pulse", p(style = "margin: 0; color: var(--text-muted);", "Generating report...")) else NULL, if (!loading && !is.null(report) && nzchar(report)) div(class = "card-custom", style = "margin-top: 1rem;", h4("Report"), div(class = "ai-report-output", report)) else NULL)
+    key <- ai_effective_key(); has_key <- is.character(key) && nzchar(trimws(key)); loading <- ai_loading(); report <- ai_report_text(); ch <- report_choices()
+    needs_ai <- input$ai_report_type %||% "" %in% c("brief", "stock", "movers", "news", "forex_brief", "forex_snapshot", "commodity_brief", "commodity_snapshot", "economic_brief", "economic_snapshot")
+    if (needs_ai && !has_key) return(div(class = "ai-reporter-card", div(class = "ai-title", "AI Market Reporter"), div(class = "ai-desc", "This report needs an AI key. Add OLLAMA_CLOUD_API_KEY or OPENAI_API_KEY to .env and restart."), div(class = "ai-reporter-connect", p(style = "margin: 0; font-size: 0.9rem;", "Ollama Cloud: ", tags$a(href = "https://ollama.com/settings", target = "_blank", "ollama.com/settings"), ". OpenAI: OPENAI_API_KEY=sk-... in .env."))))
+    tagList(
+      div(class = "ai-reporter-card",
+        div(class = "ai-title", "AI Market Reporter"),
+        div(class = "ai-desc", "Report type depends on the selected section. Trend reports use data only (no AI key)."),
+        selectInput("ai_report_type", "Report type", choices = ch, selected = if (!is.null(input$ai_report_type) && input$ai_report_type %in% ch) input$ai_report_type else ch[1]),
+        actionButton("ai_generate", "Generate report", class = "btn-primary")
+      ),
+      if (loading) div(class = "card-custom pulse", p(style = "margin: 0; color: var(--text-muted);", "Generating report...")) else NULL,
+      if (!loading && !is.null(report) && nzchar(report)) div(class = "card-custom", style = "margin-top: 1rem;", h4("Report"), div(class = "ai-report-output", report)) else NULL
+    )
   })
   observeEvent(input$ai_generate, {
-    key <- ai_effective_key(); if (!is.character(key) || !nzchar(trimws(key))) return(); ai_loading(TRUE); ai_report_text(NULL)
-    report_type <- input$ai_report_type %||% "brief"; context <- build_ai_context(report_type)
-    prompt <- switch(report_type, brief = paste0("You are a concise market commentator. Based on the following, write 2–4 short sentences summarizing what stands out. Be factual.\n\n", context), movers = paste0("You are a market analyst. Based on these top gainers and losers, write 2–3 sentences on what's moving the market. Be concise.\n\n", context), news = paste0("You are a news summarizer. Based on these headlines, write 2–3 sentences on main themes. Be neutral.\n\n", context), stock = paste0("You are a market commentator. Based on this stock snapshot, write 1–2 sentences. Be concise.\n\n", context), paste0("Summarize this market data in 2–4 sentences:\n\n", context))
+    report_type <- input$ai_report_type %||% "brief"
+    ai_loading(TRUE); ai_report_text(NULL)
+    if (report_type == "stock_trend") { ai_loading(FALSE); ai_report_text(build_stock_trend_report()); return() }
+    if (report_type == "forex_trend") { ai_loading(FALSE); ai_report_text(build_forex_trend_report()); return() }
+    if (report_type == "commodity_trend") { ai_loading(FALSE); ai_report_text(build_value_trend_report(commodity_df(), paste0("Commodity (", input$commodity %||% "", ")"), "value")); return() }
+    if (report_type == "economic_trend") { ai_loading(FALSE); ai_report_text(build_value_trend_report(economic_df(), paste0("Indicator (", input$economic_indicator %||% "", ")"), "value")); return() }
+    key <- ai_effective_key(); if (!is.character(key) || !nzchar(trimws(key))) { ai_loading(FALSE); return() }
+    context <- build_ai_context(report_type)
+    prompt <- switch(
+      report_type,
+      brief = paste0("You are a professional equity research analyst. Based on the following market data, write a rich but concise overview in 2–3 short paragraphs (6–10 sentences). Focus on: current level and recent trend, broader context, key opportunities and risks, and what to watch next. Write in clear prose only.\n\n", context),
+      stock = paste0("You are a market commentator. Based on this stock snapshot, write 2–4 sentences on performance, trend, and key risks or drivers. Be concise.\n\n", context),
+      movers = paste0("You are a market analyst. Based on these top gainers and losers, write 2–3 sentences on what's moving the market. Highlight sectors, themes, and risks. Respond only in plain English paragraphs, no JSON or code.\n\n", context),
+      news = paste0("You are a news summarizer. Based on these headlines, write 2–3 sentences on main themes and implications. Be neutral.\n\n", context),
+      forex_brief = paste0("You are a forex analyst. Based on the following FX data, write a short overview (2–3 paragraphs): level and trend, drivers, and what to watch. Plain prose only.\n\n", context),
+      forex_snapshot = paste0("You are a forex commentator. Based on this FX snapshot, write 2–4 sentences on the pair's performance and outlook. Be concise.\n\n", context),
+      commodity_brief = paste0("You are a commodity analyst. Based on the following data, write a short overview (2–3 paragraphs): level and trend, drivers, and risks. Plain prose only.\n\n", context),
+      commodity_snapshot = paste0("You are a commodity commentator. Based on this snapshot, write 2–4 sentences on performance and outlook. Be concise.\n\n", context),
+      economic_brief = paste0("You are an economic analyst. Based on the following indicator data, write a short overview (2–3 paragraphs): level and trend, context, and implications. Plain prose only.\n\n", context),
+      economic_snapshot = paste0("You are an economic commentator. Based on this indicator snapshot, write 2–4 sentences on the reading and what it suggests. Be concise.\n\n", context),
+      paste0("Summarize this data in 2–4 sentences:\n\n", context)
+    )
+    prompt <- paste0(prompt, "\n\nRespond only with human-readable English in paragraph form. No JSON, code, or search queries.")
     result <- ollama_chat(prompt, key)
     ai_loading(FALSE); if (result$ok) ai_report_text(result$text) else set_err(simpleError(result$error))
   })

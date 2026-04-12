@@ -126,6 +126,176 @@ openai_chat <- function(prompt, api_key, model = "gpt-4o-mini") {
   }
 }
 
+# ---- Multi-agent: chat with explicit roles (system + user/assistant) ----
+# messages: list of list(role = "system"|"user"|"assistant", content = "...")
+llm_chat_messages <- function(messages, api_key, provider = c("ollama", "openai"), model = NULL) {
+  provider <- match.arg(provider)
+  if (!nzchar(api_key)) return(list(ok = FALSE, error = "No API key provided."))
+  if (is.null(model)) model <- if (provider == "ollama") "gpt-oss:120b" else "gpt-4o-mini"
+  body <- if (provider == "ollama") {
+    list(model = model, messages = messages, stream = FALSE)
+  } else {
+    list(model = model, messages = messages, max_tokens = 2048L)
+  }
+  url <- if (provider == "ollama") "https://ollama.com/api/chat" else "https://api.openai.com/v1/chat/completions"
+  if (use_httr2) {
+    tryCatch({
+      req <- request(url) %>%
+        req_headers(Authorization = paste0("Bearer ", api_key), `Content-Type` = "application/json") %>%
+        req_body_json(body) %>% req_method("POST")
+      resp <- req_perform(req)
+      if (resp_status(resp) != 200L) return(list(ok = FALSE, error = paste0("API status ", resp_status(resp))))
+      out <- resp_body_json(resp)
+      text <- if (provider == "ollama") out$message$content else out$choices[[1]]$message$content
+      if (is.null(text)) return(list(ok = FALSE, error = "Empty response."))
+      list(ok = TRUE, text = as.character(text))
+    }, error = function(e) list(ok = FALSE, error = conditionMessage(e)))
+  } else {
+    tryCatch({
+      r <- POST(url,
+        add_headers(Authorization = paste0("Bearer ", api_key), `Content-Type` = "application/json"),
+        body = body, encode = "json")
+      if (status_code(r) != 200L) return(list(ok = FALSE, error = paste0("API status ", status_code(r))))
+      out <- content(r, as = "parsed")
+      text <- if (provider == "ollama") out$message$content else out$choices[[1]]$message$content
+      if (is.null(text)) return(list(ok = FALSE, error = "Empty response."))
+      list(ok = TRUE, text = as.character(text))
+    }, error = function(e) list(ok = FALSE, error = conditionMessage(e)))
+  }
+}
+
+pick_llm_credentials <- function() {
+  if (nzchar(trimws(OLLAMA_CLOUD_API_KEY))) return(list(ok = TRUE, provider = "ollama", key = OLLAMA_CLOUD_API_KEY))
+  if (nzchar(trimws(OPENAI_API_KEY))) return(list(ok = TRUE, provider = "openai", key = OPENAI_API_KEY))
+  list(ok = FALSE, provider = NA_character_, key = "")
+}
+
+truncate_ai_context <- function(text, max_chars = 12000L) {
+  if (is.null(text) || !nzchar(text)) return(text)
+  if (nchar(text) <= max_chars) return(text)
+  paste0(substring(text, 1L, max_chars), "\n\n[Context truncated for length.]")
+}
+
+section_display_name <- function(section) {
+  switch(section %||% "",
+    stock = "Stock Daily",
+    gainers = "Top Gainers/Losers",
+    news = "News & Sentiment",
+    forex = "Forex",
+    commodity = "Commodities",
+    economic = "Economic Indicators",
+    as.character(section %||% "Market")
+  )
+}
+
+report_type_display_name <- function(report_type) {
+  switch(report_type %||% "",
+    brief = "Cross-section overview",
+    stock = "Stock snapshot",
+    stock_trend = "Stock trend (computed)",
+    movers = "Top movers insight",
+    news = "News briefing",
+    forex_brief = "Forex overview",
+    forex_snapshot = "Forex snapshot",
+    forex_trend = "Forex trend (computed)",
+    commodity_brief = "Commodity overview",
+    commodity_snapshot = "Commodity snapshot",
+    commodity_trend = "Commodity trend (computed)",
+    economic_brief = "Economic indicator overview",
+    economic_snapshot = "Economic indicator snapshot",
+    economic_trend = "Economic trend (computed)",
+    as.character(report_type %||% "Analysis")
+  )
+}
+
+# Agent 1 — Orchestration: plan themes, gaps, and delegation (no polished narrative).
+AGENT_SYSTEM_ORCHESTRATOR <- paste(
+  "You are the Orchestration Lead for a market analysis workstation.",
+  "Plan the workflow only: prioritize themes, identify gaps in the provided data, and state what downstream analysis should emphasize.",
+  "Do not write a polished narrative for the end user.",
+  "Output clearly labeled sections: PRIORITY THEMES (bullets), DATA COVERAGE & GAPS, DELEGATION (what the Market Analyst should stress-test).",
+  "If the context indicates no data was fetched, say so. Never invent prices, rates, or statistics not present in the context.",
+  sep = "\n"
+)
+
+# Agent 2 — Analyst: evidence-based memo from context + plan.
+AGENT_SYSTEM_ANALYST <- paste(
+  "You are the Market Intelligence Analyst.",
+  "You receive (1) API-sourced market context and (2) the Orchestration Lead's plan.",
+  "Produce rigorous, evidence-based analysis: cite specific numbers from the context when available; separate facts from interpretation.",
+  "Use headings: FACTS FROM DATA, INTERPRETATION, RISKS & UNCERTAINTIES, SCENARIOS (or state that scenarios are not warranted).",
+  "If data is missing for a point, write 'Insufficient data in context' for that item. Do not fabricate figures.",
+  sep = "\n"
+)
+
+# Agent 3 — Editor: unify plan + analyst memo into the user-facing brief.
+AGENT_SYSTEM_EDITOR <- paste(
+  "You are the Lead Editor.",
+  "Combine the Orchestration plan and the Market Analyst memo into one coherent brief for the reader.",
+  "Match the requested style: overview briefs use 2–3 short paragraphs; snapshots use 2–4 tight sentences; stay neutral for news.",
+  "Remove redundancy, align tone, and end with one sentence on what to watch next.",
+  "Output plain paragraphs only—no JSON, code, or section labels like 'SECTION 1'.",
+  sep = "\n"
+)
+
+run_agentic_pipeline <- function(report_type, section, context, cred, progress_fn = NULL) {
+  ctx <- truncate_ai_context(context)
+  sec_name <- section_display_name(section)
+  rtp_name <- report_type_display_name(report_type)
+  prov <- cred$provider
+  key <- cred$key
+  p <- function(value, detail) {
+    if (is.function(progress_fn)) progress_fn(value, detail)
+  }
+  u1 <- paste0(
+    "Report type code: ", report_type, " (", rtp_name, ")\n",
+    "App section: ", sec_name, "\n\n",
+    "Context from the application (may include stock, FX, news, or macro snippets):\n\n",
+    ctx
+  )
+  p(0.2, "Agent 1 — Orchestrator: planning themes and gaps…")
+  r1 <- llm_chat_messages(
+    list(
+      list(role = "system", content = AGENT_SYSTEM_ORCHESTRATOR),
+      list(role = "user", content = u1)
+    ),
+    api_key = key, provider = prov
+  )
+  if (!r1$ok) return(list(ok = FALSE, error = r1$error, orchestrator = NULL, analyst = NULL, final = NULL))
+  orch <- r1$text
+  u2 <- paste0(
+    "ORCHESTRATION PLAN:\n", orch, "\n\n",
+    "RAW CONTEXT:\n", ctx
+  )
+  p(0.55, "Agent 2 — Market Analyst: evidence-based memo…")
+  r2 <- llm_chat_messages(
+    list(
+      list(role = "system", content = AGENT_SYSTEM_ANALYST),
+      list(role = "user", content = u2)
+    ),
+    api_key = key, provider = prov
+  )
+  if (!r2$ok) return(list(ok = FALSE, error = r2$error, orchestrator = orch, analyst = NULL, final = NULL))
+  an <- r2$text
+  orch_short <- if (nchar(orch) > 1800L) paste0(substring(orch, 1L, 1800L), "\n[…]") else orch
+  u3 <- paste0(
+    "Deliverable: ", rtp_name, " for section ", sec_name, ".\n\n",
+    "ORCHESTRATION (for alignment; may be shortened):\n", orch_short, "\n\n",
+    "MARKET ANALYST OUTPUT:\n", an
+  )
+  p(0.85, "Agent 3 — Lead Editor: final brief…")
+  r3 <- llm_chat_messages(
+    list(
+      list(role = "system", content = AGENT_SYSTEM_EDITOR),
+      list(role = "user", content = u3)
+    ),
+    api_key = key, provider = prov
+  )
+  if (!r3$ok) return(list(ok = FALSE, error = r3$error, orchestrator = orch, analyst = an, final = NULL))
+  p(1, "Done")
+  list(ok = TRUE, error = NULL, orchestrator = orch, analyst = an, final = r3$text)
+}
+
 # TIME_SERIES_DAILY: daily OHLCV. Build rows explicitly to avoid date/format issues (like 06_alphavantage_ai_report.R).
 av_stock_daily <- function(symbol = "AAPL", outputsize = "compact") {
   out <- av_get(list(`function` = "TIME_SERIES_DAILY", symbol = symbol, outputsize = outputsize))
@@ -371,13 +541,17 @@ app_css <- "
   .ai-reporter-card .ai-title { font-size: 1.5rem; font-weight: 800; color: var(--accent); margin-bottom: 0.5rem; }
   .ai-reporter-connect { background: #f8fafc; border: 2px dashed var(--border); border-radius: 12px; padding: 1.5rem; margin-top: 1rem; }
   .ai-report-output { white-space: pre-wrap; font-size: 0.9rem; line-height: 1.6; padding: 1rem; background: #f8fafc; border-radius: 8px; border-left: 4px solid var(--accent); }
+  .agent-pipeline { margin-top: 1rem; }
+  .agent-step { background: #f8fafc; border: 1px solid var(--border); border-radius: 10px; padding: 0.75rem 1rem; margin-bottom: 0.65rem; }
+  .agent-step summary { font-weight: 700; font-size: 0.82rem; color: var(--accent); cursor: pointer; }
+  .agent-step .agent-body { margin-top: 0.5rem; white-space: pre-wrap; font-size: 0.82rem; line-height: 1.5; color: var(--text); max-height: 280px; overflow-y: auto; }
   .pulse { animation: pulse 1.5s ease-in-out infinite; }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
 "
 
 ui <- fluidPage(
   tags$head(tags$style(HTML(app_css))),
-  titlePanel(windowTitle = "Daily Market", title = div(class = "app-header", div(class = "title", "Daily Market Analysis"), div(class = "subtitle", "Stocks · Forex · News · AI Insights"))),
+  titlePanel(windowTitle = "Daily Market", title = div(class = "app-header", div(class = "title", "Daily Market Analysis"), div(class = "subtitle", "Stocks · Forex · News · Multi-agent AI analysis"))),
   sidebarLayout(
     sidebarPanel(class = "sidebar", width = 3,
       selectInput("section", "Section",
@@ -465,8 +639,9 @@ server <- function(input, output, session) {
   commodity_df <- reactiveVal(NULL)
   economic_df <- reactiveVal(NULL)
   ai_report_text <- reactiveVal(NULL)
+  ai_orchestrator_text <- reactiveVal(NULL)
+  ai_analyst_text <- reactiveVal(NULL)
   ai_loading <- reactiveVal(FALSE)
-  ai_effective_key <- reactive(OLLAMA_CLOUD_API_KEY)
 
   clear_err <- function() err_msg(NULL)
   set_err <- function(e) err_msg(paste0("Error: ", conditionMessage(e)))
@@ -840,46 +1015,62 @@ server <- function(input, output, session) {
     updateSelectInput(session, "ai_report_type", choices = ch, selected = ch[1])
   })
   output$ui_ai_reporter <- renderUI({
-    key <- ai_effective_key(); has_key <- is.character(key) && nzchar(trimws(key)); loading <- ai_loading(); report <- ai_report_text(); ch <- report_choices()
+    cred <- pick_llm_credentials(); has_key <- isTRUE(cred$ok); loading <- ai_loading()
+    report <- ai_report_text(); orch <- ai_orchestrator_text(); an <- ai_analyst_text(); ch <- report_choices()
     needs_ai <- input$ai_report_type %||% "" %in% c("brief", "stock", "movers", "news", "forex_brief", "forex_snapshot", "commodity_brief", "commodity_snapshot", "economic_brief", "economic_snapshot")
-    if (needs_ai && !has_key) return(div(class = "ai-reporter-card", div(class = "ai-title", "AI Market Reporter"), div(class = "ai-desc", "This report needs an AI key. Add OLLAMA_CLOUD_API_KEY or OPENAI_API_KEY to .env and restart."), div(class = "ai-reporter-connect", p(style = "margin: 0; font-size: 0.9rem;", "Ollama Cloud: ", tags$a(href = "https://ollama.com/settings", target = "_blank", "ollama.com/settings"), ". OpenAI: OPENAI_API_KEY=sk-... in .env."))))
+    prov_lab <- if (has_key) paste0(" (", cred$provider, ")") else ""
+    if (needs_ai && !has_key) return(div(class = "ai-reporter-card", div(class = "ai-title", "Multi-agent AI analysis"), div(class = "ai-desc", "LLM-backed reports need a key in .env (Ollama Cloud preferred, or OpenAI)."), div(class = "ai-reporter-connect", p(style = "margin: 0; font-size: 0.9rem;", "Ollama Cloud: ", tags$a(href = "https://ollama.com/settings", target = "_blank", "ollama.com/settings"), ". OpenAI: OPENAI_API_KEY=sk-... in .env."))))
     tagList(
       div(class = "ai-reporter-card",
-        div(class = "ai-title", "AI Market Reporter"),
-        div(class = "ai-desc", "Report type depends on the selected section. Trend reports use data only (no AI key)."),
+        div(class = "ai-title", "Multi-agent AI analysis"),
+        div(class = "ai-desc", paste0("Orchestrator → Market Analyst → Lead Editor run in sequence for each AI report", prov_lab, ". Trend reports use fetched data only (no LLM).")),
         selectInput("ai_report_type", "Report type", choices = ch, selected = if (!is.null(input$ai_report_type) && input$ai_report_type %in% ch) input$ai_report_type else ch[1]),
-        actionButton("ai_generate", "Generate report", class = "btn-primary")
+        actionButton("ai_generate", "Run analysis", class = "btn-primary")
       ),
-      if (loading) div(class = "card-custom pulse", p(style = "margin: 0; color: var(--text-muted);", "Generating report...")) else NULL,
-      if (!loading && !is.null(report) && nzchar(report)) div(class = "card-custom", style = "margin-top: 1rem;", h4("Report"), div(class = "ai-report-output", report)) else NULL
+      if (loading) div(class = "card-custom pulse", p(style = "margin: 0; color: var(--text-muted);", "Running 3-agent pipeline…")) else NULL,
+      if (!loading && !is.null(report) && nzchar(report)) div(class = "card-custom", style = "margin-top: 1rem;", h4("Final brief"), div(class = "ai-report-output", report)) else NULL,
+      if (!loading && ((!is.null(orch) && nzchar(orch)) || (!is.null(an) && nzchar(an)))) div(class = "agent-pipeline",
+        p(style = "margin: 0 0 0.5rem 0; font-size: 0.8rem; color: var(--text-muted);", "Agent traces (intermediate outputs)"),
+        if (!is.null(orch) && nzchar(orch)) tags$details(class = "agent-step", open = FALSE, tags$summary("1. Orchestrator — plan & gaps"), div(class = "agent-body", orch)) else NULL,
+        if (!is.null(an) && nzchar(an)) tags$details(class = "agent-step", open = FALSE, tags$summary("2. Market Analyst — evidence memo"), div(class = "agent-body", an)) else NULL
+      ) else NULL
     )
   })
   observeEvent(input$ai_generate, {
     report_type <- input$ai_report_type %||% "brief"
-    ai_loading(TRUE); ai_report_text(NULL)
+    ai_loading(TRUE)
+    ai_report_text(NULL); ai_orchestrator_text(NULL); ai_analyst_text(NULL)
     if (report_type == "stock_trend") { ai_loading(FALSE); ai_report_text(build_stock_trend_report()); return() }
     if (report_type == "forex_trend") { ai_loading(FALSE); ai_report_text(build_forex_trend_report()); return() }
     if (report_type == "commodity_trend") { ai_loading(FALSE); ai_report_text(build_value_trend_report(commodity_df(), paste0("Commodity (", input$commodity %||% "", ")"), "value")); return() }
     if (report_type == "economic_trend") { ai_loading(FALSE); ai_report_text(build_value_trend_report(economic_df(), paste0("Indicator (", input$economic_indicator %||% "", ")"), "value")); return() }
-    key <- ai_effective_key(); if (!is.character(key) || !nzchar(trimws(key))) { ai_loading(FALSE); return() }
+    cred <- pick_llm_credentials()
+    if (!isTRUE(cred$ok)) { ai_loading(FALSE); return() }
     context <- build_ai_context(report_type)
-    prompt <- switch(
-      report_type,
-      brief = paste0("You are a professional equity research analyst. Based on the following market data, write a rich but concise overview in 2–3 short paragraphs (6–10 sentences). Focus on: current level and recent trend, broader context, key opportunities and risks, and what to watch next. Write in clear prose only.\n\n", context),
-      stock = paste0("You are a market commentator. Based on this stock snapshot, write 2–4 sentences on performance, trend, and key risks or drivers. Be concise.\n\n", context),
-      movers = paste0("You are a market analyst. Based on these top gainers and losers, write 2–3 sentences on what's moving the market. Highlight sectors, themes, and risks. Respond only in plain English paragraphs, no JSON or code.\n\n", context),
-      news = paste0("You are a news summarizer. Based on these headlines, write 2–3 sentences on main themes and implications. Be neutral.\n\n", context),
-      forex_brief = paste0("You are a forex analyst. Based on the following FX data, write a short overview (2–3 paragraphs): level and trend, drivers, and what to watch. Plain prose only.\n\n", context),
-      forex_snapshot = paste0("You are a forex commentator. Based on this FX snapshot, write 2–4 sentences on the pair's performance and outlook. Be concise.\n\n", context),
-      commodity_brief = paste0("You are a commodity analyst. Based on the following data, write a short overview (2–3 paragraphs): level and trend, drivers, and risks. Plain prose only.\n\n", context),
-      commodity_snapshot = paste0("You are a commodity commentator. Based on this snapshot, write 2–4 sentences on performance and outlook. Be concise.\n\n", context),
-      economic_brief = paste0("You are an economic analyst. Based on the following indicator data, write a short overview (2–3 paragraphs): level and trend, context, and implications. Plain prose only.\n\n", context),
-      economic_snapshot = paste0("You are an economic commentator. Based on this indicator snapshot, write 2–4 sentences on the reading and what it suggests. Be concise.\n\n", context),
-      paste0("Summarize this data in 2–4 sentences:\n\n", context)
+    res <- tryCatch(
+      withProgress(message = "Multi-agent analysis", value = 0, {
+        run_agentic_pipeline(
+          report_type = report_type,
+          section = input$section %||% "",
+          context = context,
+          cred = cred,
+          progress_fn = function(value, detail) setProgress(value, detail = detail)
+        )
+      }),
+      error = function(e) {
+        list(ok = FALSE, error = conditionMessage(e), orchestrator = NULL, analyst = NULL, final = NULL)
+      }
     )
-    prompt <- paste0(prompt, "\n\nRespond only with human-readable English in paragraph form. No JSON, code, or search queries.")
-    result <- ollama_chat(prompt, key)
-    ai_loading(FALSE); if (result$ok) ai_report_text(result$text) else set_err(simpleError(result$error))
+    ai_loading(FALSE)
+    if (!isTRUE(res$ok)) {
+      if (!is.null(res$orchestrator)) ai_orchestrator_text(res$orchestrator)
+      if (!is.null(res$analyst)) ai_analyst_text(res$analyst)
+      set_err(simpleError(res$error %||% "Analysis failed."))
+      return()
+    }
+    ai_orchestrator_text(res$orchestrator)
+    ai_analyst_text(res$analyst)
+    ai_report_text(res$final)
   })
 }
 

@@ -128,6 +128,7 @@ openai_chat <- function(prompt, api_key, model = "gpt-4o-mini") {
 
 # ---- Multi-agent: chat with explicit roles (system + user/assistant) ----
 # messages: list of list(role = "system"|"user"|"assistant", content = "...")
+# Retries on HTTP 429 with backoff (same idea as openai_chat_completions_request).
 llm_chat_messages <- function(messages, api_key, provider = c("ollama", "openai"), model = NULL) {
   provider <- match.arg(provider)
   if (!nzchar(api_key)) return(list(ok = FALSE, error = "No API key provided."))
@@ -139,23 +140,54 @@ llm_chat_messages <- function(messages, api_key, provider = c("ollama", "openai"
   }
   url <- if (provider == "ollama") "https://ollama.com/api/chat" else "https://api.openai.com/v1/chat/completions"
   if (use_httr2) {
-    tryCatch({
-      req <- request(url) %>%
-        req_headers(Authorization = paste0("Bearer ", api_key), `Content-Type` = "application/json") %>%
-        req_body_json(body) %>% req_method("POST")
-      resp <- req_perform(req)
-      if (resp_status(resp) != 200L) return(list(ok = FALSE, error = paste0("API status ", resp_status(resp))))
-      out <- resp_body_json(resp)
-      text <- if (provider == "ollama") out$message$content else out$choices[[1]]$message$content
-      if (is.null(text)) return(list(ok = FALSE, error = "Empty response."))
-      list(ok = TRUE, text = as.character(text))
-    }, error = function(e) list(ok = FALSE, error = conditionMessage(e)))
+    chat_once <- function() {
+      tryCatch({
+        req <- request(url) %>%
+          req_headers(Authorization = paste0("Bearer ", api_key), `Content-Type` = "application/json") %>%
+          req_body_json(body) %>% req_method("POST")
+        resp <- req_perform(req)
+        st <- resp_status(resp)
+        raw <- tryCatch(resp_body_string(resp), error = function(e) "")
+        if (st == 200L && nzchar(raw)) {
+          out <- jsonlite::fromJSON(raw, simplifyVector = TRUE)
+          text <- if (provider == "ollama") out$message$content else out$choices[[1]]$message$content
+          if (is.null(text)) return(list(ok = FALSE, error = "Empty response.", status = st))
+          return(list(ok = TRUE, text = as.character(text), status = st))
+        }
+        err <- paste0("HTTP ", st)
+        if (nzchar(raw)) {
+          pj <- tryCatch(jsonlite::fromJSON(raw, simplifyVector = FALSE), error = function(e) NULL)
+          if (!is.null(pj$error)) {
+            em <- pj$error$message %||% pj$error
+            if (length(em)) err <- paste(as.character(em), collapse = " ")
+          }
+        }
+        list(ok = FALSE, error = err, status = st)
+      }, error = function(e) list(ok = FALSE, error = conditionMessage(e), status = NA_integer_))
+    }
+    last <- NULL
+    for (attempt in 1:5) {
+      if (attempt > 1L) {
+        if (is.null(last$status) || last$status != 429L) break
+        Sys.sleep(c(6, 15, 30, 45)[attempt - 1L])
+      }
+      last <- chat_once()
+      if (isTRUE(last$ok)) return(list(ok = TRUE, text = last$text))
+    }
+    err <- last$error %||% "Chat request failed."
+    if (!is.null(last$status) && last$status == 429L) err <- paste0(err, rate_limit_429_hint())
+    return(list(ok = FALSE, error = err))
   } else {
     tryCatch({
       r <- POST(url,
         add_headers(Authorization = paste0("Bearer ", api_key), `Content-Type` = "application/json"),
         body = body, encode = "json")
-      if (status_code(r) != 200L) return(list(ok = FALSE, error = paste0("API status ", status_code(r))))
+      sc <- status_code(r)
+      if (sc != 200L) {
+        err <- paste0("API status ", sc)
+        if (sc == 429L) err <- paste0(err, rate_limit_429_hint())
+        return(list(ok = FALSE, error = err))
+      }
       out <- content(r, as = "parsed")
       text <- if (provider == "ollama") out$message$content else out$choices[[1]]$message$content
       if (is.null(text)) return(list(ok = FALSE, error = "Empty response."))
@@ -168,6 +200,13 @@ pick_llm_credentials <- function() {
   if (nzchar(trimws(OLLAMA_CLOUD_API_KEY))) return(list(ok = TRUE, provider = "ollama", key = OLLAMA_CLOUD_API_KEY))
   if (nzchar(trimws(OPENAI_API_KEY))) return(list(ok = TRUE, provider = "openai", key = OPENAI_API_KEY))
   list(ok = FALSE, provider = NA_character_, key = "")
+}
+
+# Use when tool calling is enabled: prefer OpenAI for the whole 3-agent run (stable tools API), if key is present.
+openai_credentials <- function() {
+  k <- trimws(OPENAI_API_KEY)
+  if (nzchar(k)) return(list(ok = TRUE, provider = "openai", key = k))
+  NULL
 }
 
 truncate_ai_context <- function(text, max_chars = 12000L) {
@@ -228,6 +267,16 @@ AGENT_SYSTEM_ANALYST <- paste(
   sep = "\n"
 )
 
+# Same analyst role; when tools are on, require tool use when the plan flags gaps (models may still skip — not guaranteed).
+AGENT_SYSTEM_ANALYST_WITH_TOOLS <- paste(
+  AGENT_SYSTEM_ANALYST,
+  "You have tools that call the live Alpha Vantage API (same data as the app).",
+  "If the Orchestration plan lists missing or incomplete data (e.g. no ticker, no history, no volume, no news), you MUST call the relevant tool(s) at least once before writing FACTS FROM DATA, unless the RAW CONTEXT already has everything needed.",
+  "If you need a specific symbol, FX pair, or series not in the context, call the tool — do not invent figures.",
+  "After tools return, cite numbers from tool output or RAW CONTEXT only. Keep calls to the minimum needed (each call uses API quota), but do not skip tools when the plan explicitly requires filling gaps.",
+  sep = "\n"
+)
+
 # Agent 3 — Editor: unify plan + analyst memo into the user-facing brief.
 AGENT_SYSTEM_EDITOR <- paste(
   "You are the Lead Editor.",
@@ -238,7 +287,7 @@ AGENT_SYSTEM_EDITOR <- paste(
   sep = "\n"
 )
 
-run_agentic_pipeline <- function(report_type, section, context, cred, progress_fn = NULL) {
+run_agentic_pipeline <- function(report_type, section, context, cred, progress_fn = NULL, use_tools = FALSE) {
   ctx <- truncate_ai_context(context)
   sec_name <- section_display_name(section)
   rtp_name <- report_type_display_name(report_type)
@@ -261,22 +310,50 @@ run_agentic_pipeline <- function(report_type, section, context, cred, progress_f
     ),
     api_key = key, provider = prov
   )
-  if (!r1$ok) return(list(ok = FALSE, error = r1$error, orchestrator = NULL, analyst = NULL, final = NULL))
+  if (!r1$ok) return(list(ok = FALSE, error = r1$error, orchestrator = NULL, analyst = NULL, final = NULL, tools_trace = NULL))
   orch <- r1$text
+  Sys.sleep(2.2)
   u2 <- paste0(
     "ORCHESTRATION PLAN:\n", orch, "\n\n",
     "RAW CONTEXT:\n", ctx
   )
   p(0.55, "Agent 2 — Market Analyst: evidence-based memo…")
-  r2 <- llm_chat_messages(
-    list(
-      list(role = "system", content = AGENT_SYSTEM_ANALYST),
-      list(role = "user", content = u2)
-    ),
-    api_key = key, provider = prov
-  )
-  if (!r2$ok) return(list(ok = FALSE, error = r2$error, orchestrator = orch, analyst = NULL, final = NULL))
-  an <- r2$text
+  analyst_system <- if (isTRUE(use_tools)) AGENT_SYSTEM_ANALYST_WITH_TOOLS else AGENT_SYSTEM_ANALYST
+  if (isTRUE(use_tools) && prov == "openai") {
+    r2t <- run_analyst_openai_with_tools(
+      system_content = analyst_system,
+      user_content = u2,
+      api_key = key,
+      progress_fn = p,
+      progress_base = 0.55
+    )
+    if (!r2t$ok) return(list(ok = FALSE, error = r2t$error, orchestrator = orch, analyst = NULL, final = NULL, tools_trace = r2t$tools_trace))
+    an <- r2t$text
+    tools_trace <- r2t$tools_trace
+  } else if (isTRUE(use_tools) && prov == "ollama") {
+    r2t <- run_analyst_ollama_with_tools(
+      system_content = analyst_system,
+      user_content = u2,
+      api_key = key,
+      progress_fn = p,
+      progress_base = 0.55
+    )
+    if (!r2t$ok) return(list(ok = FALSE, error = r2t$error, orchestrator = orch, analyst = NULL, final = NULL, tools_trace = r2t$tools_trace))
+    an <- r2t$text
+    tools_trace <- r2t$tools_trace
+  } else {
+    r2 <- llm_chat_messages(
+      list(
+        list(role = "system", content = analyst_system),
+        list(role = "user", content = u2)
+      ),
+      api_key = key, provider = prov
+    )
+    if (!r2$ok) return(list(ok = FALSE, error = r2$error, orchestrator = orch, analyst = NULL, final = NULL, tools_trace = NULL))
+    an <- r2$text
+    tools_trace <- NULL
+  }
+  Sys.sleep(2.2)
   orch_short <- if (nchar(orch) > 1800L) paste0(substring(orch, 1L, 1800L), "\n[…]") else orch
   u3 <- paste0(
     "Deliverable: ", rtp_name, " for section ", sec_name, ".\n\n",
@@ -291,9 +368,9 @@ run_agentic_pipeline <- function(report_type, section, context, cred, progress_f
     ),
     api_key = key, provider = prov
   )
-  if (!r3$ok) return(list(ok = FALSE, error = r3$error, orchestrator = orch, analyst = an, final = NULL))
+  if (!r3$ok) return(list(ok = FALSE, error = r3$error, orchestrator = orch, analyst = an, final = NULL, tools_trace = tools_trace))
   p(1, "Done")
-  list(ok = TRUE, error = NULL, orchestrator = orch, analyst = an, final = r3$text)
+  list(ok = TRUE, error = NULL, orchestrator = orch, analyst = an, final = r3$text, tools_trace = tools_trace)
 }
 
 # TIME_SERIES_DAILY: daily OHLCV. Build rows explicitly to avoid date/format issues (like 06_alphavantage_ai_report.R).
@@ -494,6 +571,505 @@ av_economic <- function(indicator = "CPI", interval = "monthly", ...) {
   df[order(df$date, decreasing = TRUE), ]
 }
 
+# ---- Tool calling: analyst may request Alpha Vantage via tools (OpenAI Chat Completions or Ollama /api/chat) ----
+# Tool schemas follow OpenAI-style function calling; execution wraps existing av_* helpers above.
+
+parse_tool_arguments_llm <- function(args) {
+  if (is.null(args)) return(list())
+  if (is.character(args) && length(args) >= 1L) {
+    a <- trimws(args[1])
+    if (!nzchar(a)) return(list())
+    return(tryCatch(jsonlite::fromJSON(a, simplifyVector = TRUE), error = function(e) list()))
+  }
+  if (is.list(args)) return(args)
+  list()
+}
+
+# Summarize a data.frame for the model (keep responses short; respects API rate limits).
+tool_df_summary <- function(df, max_rows = 6L) {
+  if (is.null(df) || !is.data.frame(df) || nrow(df) == 0L) return("No rows returned.")
+  nr <- min(as.integer(max_rows), nrow(df))
+  paste(capture.output(print(df[seq_len(nr), , drop = FALSE], row.names = FALSE)), collapse = "\n")
+}
+
+# Execute one tool by name; returns plain-text result for the assistant message.
+execute_alpha_vantage_tool <- function(name, arguments_json) {
+  args <- parse_tool_arguments_llm(arguments_json)
+  tryCatch({
+    if (name == "get_stock_daily") {
+      sym <- toupper(trimws(as.character(args$symbol %||% "AAPL")))
+      os <- tolower(trimws(as.character(args$outputsize %||% "compact")))
+      if (!os %in% c("compact", "full")) os <- "compact"
+      df <- av_stock_daily(symbol = sym, outputsize = os)
+      paste0("TIME_SERIES_DAILY ", sym, " (", os, "), ", nrow(df), " rows. Latest rows:\n", tool_df_summary(df))
+    } else if (name == "get_fx_daily") {
+      fr <- toupper(trimws(as.character(args$from_symbol %||% "EUR")))
+      to <- toupper(trimws(as.character(args$to_symbol %||% "USD")))
+      df <- av_fx_daily(from_symbol = fr, to_symbol = to)
+      paste0("FX_DAILY ", fr, "/", to, ", ", nrow(df), " rows. Latest rows:\n", tool_df_summary(df))
+    } else if (name == "get_top_movers") {
+      d <- av_top_gainers_losers()
+      g <- d$top_gainers; L <- d$top_losers; a <- d$top_activated
+      paste0(
+        "TOP_GAINERS_LOSERS snapshot.\nGainers (up to 5 rows):\n", tool_df_summary(head(g, 5)),
+        "\nLosers:\n", tool_df_summary(head(L, 5)),
+        "\nMost active:\n", tool_df_summary(head(a, 5))
+      )
+    } else if (name == "get_news_sentiment") {
+      tk <- trimws(as.character(args$tickers %||% ""))
+      lim <- as.integer(args$limit %||% 15L)
+      if (!is.finite(lim) || lim < 1L) lim <- 15L
+      if (lim > 50L) lim <- 50L
+      df <- av_news_sentiment(tickers = tk, limit = lim)
+      paste0("NEWS_SENTIMENT, ", nrow(df), " articles. Sample:\n", tool_df_summary(df))
+    } else if (name == "get_commodity_series") {
+      comm <- trimws(as.character(args$commodity %||% "WHEAT"))
+      intv <- tolower(trimws(as.character(args$interval %||% "monthly")))
+      if (!intv %in% c("daily", "weekly", "monthly")) intv <- "monthly"
+      df <- av_commodity(commodity = comm, interval = intv)
+      paste0("Commodity ", comm, " (", intv, "), ", nrow(df), " rows. Latest:\n", tool_df_summary(df))
+    } else if (name == "get_economic_series") {
+      ind <- trimws(as.character(args$indicator %||% "CPI"))
+      int <- trimws(as.character(args$interval %||% "monthly"))
+      mat <- trimws(as.character(args$maturity %||% "10year"))
+      df <- if (ind == "TREASURY_YIELD") {
+        av_economic(indicator = ind, interval = int, maturity = mat)
+      } else if (ind == "REAL_GDP") {
+        av_economic(indicator = ind, interval = if (int %in% c("quarterly", "annual")) int else "annual")
+      } else {
+        av_economic(indicator = ind, interval = int)
+      }
+      paste0("Economic ", ind, ", ", nrow(df), " rows. Latest:\n", tool_df_summary(df))
+    } else {
+      paste0("Unknown tool: ", name)
+    }
+  }, error = function(e) paste0("Tool error (", name, "): ", conditionMessage(e)))
+}
+
+# OpenAI/Ollama-compatible tool definitions (same JSON schema for both APIs).
+market_tool_definitions_openai <- function() {
+  list(
+    list(
+      type = "function",
+      "function" = list(
+        name = "get_stock_daily",
+        description = "Fetch daily OHLCV time series for a US equity symbol via Alpha Vantage TIME_SERIES_DAILY.",
+        parameters = list(
+          type = "object",
+          properties = list(
+            symbol = list(type = "string", description = "Ticker symbol, e.g. AAPL"),
+            outputsize = list(type = "string", description = "compact (default) or full", enum = c("compact", "full"))
+          ),
+          required = list("symbol")
+        )
+      )
+    ),
+    list(
+      type = "function",
+      "function" = list(
+        name = "get_fx_daily",
+        description = "Fetch daily FX time series for a currency pair via Alpha Vantage FX_DAILY.",
+        parameters = list(
+          type = "object",
+          properties = list(
+            from_symbol = list(type = "string", description = "Base currency, e.g. EUR"),
+            to_symbol = list(type = "string", description = "Quote currency, e.g. USD")
+          ),
+          required = list("from_symbol", "to_symbol")
+        )
+      )
+    ),
+    list(
+      type = "function",
+      "function" = list(
+        name = "get_top_movers",
+        description = "Fetch top gainers, losers, and most active stocks (TOP_GAINERS_LOSERS).",
+        parameters = list(type = "object", properties = list())
+      )
+    ),
+    list(
+      type = "function",
+      "function" = list(
+        name = "get_news_sentiment",
+        description = "Fetch market news and sentiment (NEWS_SENTIMENT).",
+        parameters = list(
+          type = "object",
+          properties = list(
+            tickers = list(type = "string", description = "Optional comma-separated tickers; empty for broad news."),
+            limit = list(type = "integer", description = "Number of articles (1-50).")
+          )
+        )
+      )
+    ),
+    list(
+      type = "function",
+      "function" = list(
+        name = "get_commodity_series",
+        description = "Fetch a commodity price series (WTI, BRENT, WHEAT, etc.).",
+        parameters = list(
+          type = "object",
+          properties = list(
+            commodity = list(type = "string", description = "Alpha Vantage function name e.g. WHEAT, WTI"),
+            interval = list(type = "string", enum = c("daily", "weekly", "monthly"))
+          ),
+          required = list("commodity")
+        )
+      )
+    ),
+    list(
+      type = "function",
+      "function" = list(
+        name = "get_economic_series",
+        description = "Fetch an economic indicator time series (CPI, UNEMPLOYMENT, TREASURY_YIELD, etc.).",
+        parameters = list(
+          type = "object",
+          properties = list(
+            indicator = list(type = "string", description = "Indicator code, e.g. CPI, TREASURY_YIELD"),
+            interval = list(type = "string", description = "Depends on indicator; e.g. monthly, quarterly, annual, daily"),
+            maturity = list(type = "string", description = "For TREASURY_YIELD only, e.g. 10year")
+          ),
+          required = list("indicator")
+        )
+      )
+    )
+  )
+}
+
+# Ollama Cloud is strict about JSON Schema for tools; avoid integer/enum quirks that trigger HTTP 400.
+market_tool_definitions_ollama <- function() {
+  list(
+    list(
+      type = "function",
+      "function" = list(
+        name = "get_stock_daily",
+        description = "Fetch daily OHLCV for a US equity symbol (TIME_SERIES_DAILY).",
+        parameters = list(
+          type = "object",
+          properties = list(
+            symbol = list(type = "string", description = "Ticker e.g. AAPL"),
+            outputsize = list(type = "string", description = "compact or full")
+          ),
+          required = c("symbol")
+        )
+      )
+    ),
+    list(
+      type = "function",
+      "function" = list(
+        name = "get_fx_daily",
+        description = "Fetch daily FX series (FX_DAILY).",
+        parameters = list(
+          type = "object",
+          properties = list(
+            from_symbol = list(type = "string", description = "Base e.g. EUR"),
+            to_symbol = list(type = "string", description = "Quote e.g. USD")
+          ),
+          required = c("from_symbol", "to_symbol")
+        )
+      )
+    ),
+    list(
+      type = "function",
+      "function" = list(
+        name = "get_top_movers",
+        description = "Top gainers, losers, most active (TOP_GAINERS_LOSERS). No parameters.",
+        parameters = list(
+          type = "object",
+          properties = list(
+            noop = list(type = "string", description = "Unused optional placeholder.")
+          )
+        )
+      )
+    ),
+    list(
+      type = "function",
+      "function" = list(
+        name = "get_news_sentiment",
+        description = "News and sentiment (NEWS_SENTIMENT).",
+        parameters = list(
+          type = "object",
+          properties = list(
+            tickers = list(type = "string", description = "Optional comma-separated tickers"),
+            limit = list(type = "number", description = "Article count 1-50")
+          )
+        )
+      )
+    ),
+    list(
+      type = "function",
+      "function" = list(
+        name = "get_commodity_series",
+        description = "Commodity series e.g. WHEAT, WTI.",
+        parameters = list(
+          type = "object",
+          properties = list(
+            commodity = list(type = "string", description = "Alpha Vantage commodity code"),
+            interval = list(type = "string", description = "daily, weekly, or monthly")
+          ),
+          required = c("commodity")
+        )
+      )
+    ),
+    list(
+      type = "function",
+      "function" = list(
+        name = "get_economic_series",
+        description = "Economic indicator series e.g. CPI.",
+        parameters = list(
+          type = "object",
+          properties = list(
+            indicator = list(type = "string", description = "e.g. CPI, TREASURY_YIELD"),
+            interval = list(type = "string", description = "e.g. monthly"),
+            maturity = list(type = "string", description = "For TREASURY_YIELD e.g. 10year")
+          ),
+          required = c("indicator")
+        )
+      )
+    )
+  )
+}
+
+# Shown when HTTP 429 (LLM or burst traffic).
+rate_limit_429_hint <- function() {
+  paste0(
+    " [429 = rate limit: wait 1–3 min, then retry. Multi-agent + tools sends many requests quickly. ",
+    "Try without tool calling, upgrade API tier, or space out runs. Alpha Vantage free tier: 5 requests/minute.]"
+  )
+}
+
+# Single OpenAI Chat Completions request; retries on HTTP 429 with backoff (httr2 path).
+openai_chat_completions_request <- function(messages, api_key, model = "gpt-4o-mini", tools = NULL) {
+  if (!nzchar(api_key)) return(list(ok = FALSE, error = "No API key.", message = NULL, raw = NULL))
+  body <- list(model = model, messages = messages, max_tokens = 2048L)
+  if (!is.null(tools)) {
+    body$tools <- tools
+    body$tool_choice <- "auto"
+  }
+  if (use_httr2) {
+    openai_once <- function() {
+      tryCatch({
+        req <- request("https://api.openai.com/v1/chat/completions") %>%
+          req_headers(Authorization = paste0("Bearer ", api_key), `Content-Type` = "application/json") %>%
+          req_body_json(body) %>% req_method("POST")
+        resp <- req_perform(req)
+        st <- resp_status(resp)
+        raw <- tryCatch(resp_body_string(resp), error = function(e) "")
+        if (st == 200L) {
+          out <- jsonlite::fromJSON(raw, simplifyVector = FALSE)
+          msg <- out$choices[[1]]$message
+          return(list(ok = TRUE, error = NULL, message = msg, raw = out, status = st))
+        }
+        err_txt <- paste0("HTTP ", st)
+        if (nzchar(raw)) {
+          pj <- tryCatch(jsonlite::fromJSON(raw, simplifyVector = FALSE), error = function(e) NULL)
+          if (!is.null(pj) && !is.null(pj$error)) {
+            em <- pj$error$message %||% pj$error
+            if (length(em)) err_txt <- paste(as.character(em), collapse = " ")
+          }
+        }
+        list(ok = FALSE, error = err_txt, message = NULL, raw = NULL, status = st)
+      }, error = function(e) list(ok = FALSE, error = conditionMessage(e), message = NULL, raw = NULL, status = NA_integer_))
+    }
+    last <- NULL
+    for (attempt in 1:4) {
+      if (attempt > 1L) {
+        if (is.null(last$status) || last$status != 429L) break
+        Sys.sleep(c(6, 15, 30)[attempt - 1L])
+      }
+      last <- openai_once()
+      if (isTRUE(last$ok)) return(list(ok = TRUE, error = NULL, message = last$message, raw = last$raw))
+    }
+    err <- last$error %||% "OpenAI request failed."
+    if (!is.null(last$status) && last$status == 429L) err <- paste0(err, rate_limit_429_hint())
+    return(list(ok = FALSE, error = err, message = NULL, raw = NULL))
+  } else {
+    tryCatch({
+      r <- POST("https://api.openai.com/v1/chat/completions",
+        add_headers(Authorization = paste0("Bearer ", api_key), `Content-Type` = "application/json"),
+        body = body, encode = "json")
+      sc <- status_code(r)
+      if (sc != 200L) {
+        oute <- tryCatch(content(r, as = "parsed"), error = function(e) NULL)
+        err_txt <- if (!is.null(oute$error$message)) oute$error$message else paste0("status ", sc)
+        if (sc == 429L) err_txt <- paste0(err_txt, rate_limit_429_hint())
+        return(list(ok = FALSE, error = err_txt, message = NULL, raw = NULL))
+      }
+      out <- content(r, as = "parsed")
+      msg <- out$choices[[1]]$message
+      list(ok = TRUE, error = NULL, message = msg, raw = out)
+    }, error = function(e) list(ok = FALSE, error = conditionMessage(e), message = NULL, raw = NULL))
+  }
+}
+
+# Ollama Cloud /api/chat with optional tools (same tool schema as OpenAI-style function calling).
+# Docs: https://docs.ollama.com/capabilities/tool-calling
+ollama_chat_api_request <- function(messages, api_key, model = "gpt-oss:120b", tools = NULL) {
+  if (!nzchar(api_key)) return(list(ok = FALSE, error = "No API key.", message = NULL))
+  body <- list(model = model, messages = messages, stream = FALSE)
+  if (!is.null(tools)) body$tools <- tools
+  url <- "https://ollama.com/api/chat"
+  if (use_httr2) {
+    ollama_once <- function() {
+      tryCatch({
+        req <- request(url) %>%
+          req_headers(Authorization = paste0("Bearer ", api_key), `Content-Type` = "application/json") %>%
+          req_body_json(body) %>% req_method("POST")
+        resp <- req_perform(req)
+        st <- resp_status(resp)
+        raw_txt <- tryCatch(resp_body_string(resp), error = function(e) "")
+        out <- if (nzchar(raw_txt)) tryCatch(jsonlite::fromJSON(raw_txt, simplifyVector = FALSE), error = function(e) NULL) else NULL
+        if (st != 200L) {
+          err_txt <- if (!is.null(out)) {
+            paste0(as.character(out$error %||% out$message %||% paste0("HTTP ", st)))
+          } else {
+            paste0("HTTP ", st)
+          }
+          if (nzchar(raw_txt)) err_txt <- paste0(err_txt, " — ", substr(gsub("\n", " ", raw_txt), 1L, 600L))
+          return(list(ok = FALSE, error = err_txt, message = NULL, status = st))
+        }
+        msg <- out$message
+        list(ok = TRUE, error = NULL, message = msg, status = st)
+      }, error = function(e) list(ok = FALSE, error = conditionMessage(e), message = NULL, status = NA_integer_))
+    }
+    last <- NULL
+    for (attempt in 1:4) {
+      if (attempt > 1L) {
+        if (is.null(last$status) || last$status != 429L) break
+        Sys.sleep(c(6, 15, 30)[attempt - 1L])
+      }
+      last <- ollama_once()
+      if (isTRUE(last$ok)) return(list(ok = TRUE, error = NULL, message = last$message))
+    }
+    err <- last$error %||% "Ollama request failed."
+    if (!is.null(last$status) && last$status == 429L) err <- paste0(err, rate_limit_429_hint())
+    return(list(ok = FALSE, error = err, message = NULL))
+  } else {
+    tryCatch({
+      r <- POST(url,
+        add_headers(Authorization = paste0("Bearer ", api_key), `Content-Type` = "application/json"),
+        body = body, encode = "json")
+      st <- status_code(r)
+      raw_txt <- tryCatch(content(r, as = "text", encoding = "UTF-8"), error = function(e) "")
+      out <- content(r, as = "parsed")
+      if (st != 200L) {
+        err_txt <- if (!is.null(out)) paste0(out$error %||% out$message %||% paste0("HTTP ", st)) else paste0("HTTP ", st)
+        if (nzchar(raw_txt)) err_txt <- paste0(err_txt, " — ", substr(gsub("\n", " ", raw_txt), 1L, 600L))
+        if (st == 429L) err_txt <- paste0(err_txt, rate_limit_429_hint())
+        return(list(ok = FALSE, error = err_txt, message = NULL))
+      }
+      msg <- out$message
+      list(ok = TRUE, error = NULL, message = msg)
+    }, error = function(e) list(ok = FALSE, error = conditionMessage(e), message = NULL))
+  }
+}
+
+# Normalize tool_calls from OpenAI JSON (list or rare data.frame) into a list of call objects.
+tool_calls_as_list <- function(tcs) {
+  if (is.null(tcs)) return(list())
+  if (is.data.frame(tcs) && nrow(tcs) > 0L) {
+    return(lapply(seq_len(nrow(tcs)), function(i) as.list(tcs[i, , drop = FALSE])))
+  }
+  if (is.list(tcs) && !is.data.frame(tcs) && length(tcs) > 0L) return(tcs)
+  list()
+}
+
+# Read id, function name, and arguments JSON string from one tool_call item.
+tool_call_parts <- function(tc) {
+  if (is.null(tc)) return(NULL)
+  id <- tc$id %||% tc[["id"]]
+  fn <- tc[["function"]]
+  if (is.null(fn)) return(NULL)
+  if (is.character(fn)) {
+    fn <- tryCatch(jsonlite::fromJSON(fn, simplifyVector = TRUE), error = function(e) NULL)
+  }
+  if (!is.list(fn)) return(NULL)
+  name <- fn$name %||% fn[["name"]]
+  args <- fn$arguments
+  list(id = id, name = name, arguments = args)
+}
+
+# Analyst step with tool loop (OpenAI only). Returns final analyst text or error.
+run_analyst_openai_with_tools <- function(system_content, user_content, api_key, model = "gpt-4o-mini",
+                                          progress_fn = NULL, progress_base = 0.55,
+                                          max_rounds = 4L) {
+  tools <- market_tool_definitions_openai()
+  messages <- list(
+    list(role = "system", content = system_content),
+    list(role = "user", content = user_content)
+  )
+  tools_trace <- character()
+  p <- function(value, detail) {
+    if (is.function(progress_fn)) progress_fn(value, detail)
+  }
+  for (round in seq_len(max_rounds)) {
+    if (round > 1L) Sys.sleep(1.5)
+    p(progress_base + (0.25 * round / max_rounds), paste0("Agent 2 — Analyst: model call (round ", round, ")…"))
+    resp <- openai_chat_completions_request(messages, api_key = api_key, model = model, tools = tools)
+    if (!isTRUE(resp$ok)) return(list(ok = FALSE, error = resp$error %||% "OpenAI request failed.", text = NULL, tools_trace = tools_trace))
+    msg <- resp$message
+    if (is.null(msg)) return(list(ok = FALSE, error = "Empty message from OpenAI.", text = NULL, tools_trace = tools_trace))
+    tcs <- tool_calls_as_list(msg$tool_calls)
+    if (length(tcs) == 0L) {
+      txt <- msg$content
+      if (is.null(txt) || !nzchar(paste0(txt, collapse = ""))) {
+        return(list(ok = FALSE, error = "Analyst returned no text and no tool calls.", text = NULL, tools_trace = tools_trace))
+      }
+      return(list(ok = TRUE, error = NULL, text = paste0(as.character(txt), collapse = ""), tools_trace = tools_trace))
+    }
+    if (is.null(msg[["role"]])) msg$role <- "assistant"
+    messages <- c(messages, list(msg))
+    for (tc in tcs) {
+      parts <- tool_call_parts(tc)
+      if (is.null(parts) || is.null(parts$name) || !nzchar(as.character(parts$name))) next
+      tool_out <- execute_alpha_vantage_tool(as.character(parts$name), parts$arguments)
+      tools_trace <- c(tools_trace, paste0(as.character(parts$name), ": ", substr(tool_out, 1L, min(500L, nchar(tool_out)))))
+      messages <- c(messages, list(list(role = "tool", tool_call_id = as.character(parts$id), content = tool_out)))
+    }
+  }
+  list(ok = FALSE, error = "Too many tool rounds (limit reached). Try again with fewer requests.", text = NULL, tools_trace = tools_trace)
+}
+
+# Analyst step with tool loop (Ollama Cloud /api/chat). Uses Ollama-safe tool schema; model must support tools.
+run_analyst_ollama_with_tools <- function(system_content, user_content, api_key, model = "gpt-oss:120b",
+                                          progress_fn = NULL, progress_base = 0.55,
+                                          max_rounds = 4L) {
+  tools <- market_tool_definitions_ollama()
+  messages <- list(
+    list(role = "system", content = system_content),
+    list(role = "user", content = user_content)
+  )
+  tools_trace <- character()
+  p <- function(value, detail) {
+    if (is.function(progress_fn)) progress_fn(value, detail)
+  }
+  for (round in seq_len(max_rounds)) {
+    if (round > 1L) Sys.sleep(1.5)
+    p(progress_base + (0.25 * round / max_rounds), paste0("Agent 2 — Analyst (Ollama tools): round ", round, "…"))
+    resp <- ollama_chat_api_request(messages, api_key = api_key, model = model, tools = tools)
+    if (!isTRUE(resp$ok)) return(list(ok = FALSE, error = resp$error %||% "Ollama request failed.", text = NULL, tools_trace = tools_trace))
+    msg <- resp$message
+    if (is.null(msg)) return(list(ok = FALSE, error = "Empty message from Ollama.", text = NULL, tools_trace = tools_trace))
+    tcs <- tool_calls_as_list(msg$tool_calls)
+    if (length(tcs) == 0L) {
+      txt <- msg$content
+      if (is.null(txt) || !nzchar(paste0(txt, collapse = ""))) {
+        return(list(ok = FALSE, error = "Analyst returned no text and no tool calls. If this persists, try another Ollama model that supports tools.", text = NULL, tools_trace = tools_trace))
+      }
+      return(list(ok = TRUE, error = NULL, text = paste0(as.character(txt), collapse = ""), tools_trace = tools_trace))
+    }
+    if (is.null(msg[["role"]])) msg$role <- "assistant"
+    messages <- c(messages, list(msg))
+    for (tc in tcs) {
+      parts <- tool_call_parts(tc)
+      if (is.null(parts) || is.null(parts$name) || !nzchar(as.character(parts$name))) next
+      tool_out <- execute_alpha_vantage_tool(as.character(parts$name), parts$arguments)
+      tools_trace <- c(tools_trace, paste0(as.character(parts$name), ": ", substr(tool_out, 1L, min(500L, nchar(tool_out)))))
+      messages <- c(messages, list(list(role = "tool", tool_call_id = as.character(parts$id), content = tool_out)))
+    }
+  }
+  list(ok = FALSE, error = "Too many tool rounds (limit reached). Try again with fewer requests.", text = NULL, tools_trace = tools_trace)
+}
+
 app_css <- "
   :root { --bg-main: #f0f4f8; --bg-card: #ffffff; --accent: #0f766e; --text: #1e293b; --text-muted: #64748b; --border: #e2e8f0; --green: #059669; --red: #dc2626; }
   body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg-main); color: var(--text); }
@@ -641,6 +1217,7 @@ server <- function(input, output, session) {
   ai_report_text <- reactiveVal(NULL)
   ai_orchestrator_text <- reactiveVal(NULL)
   ai_analyst_text <- reactiveVal(NULL)
+  ai_tools_trace_text <- reactiveVal(NULL)
   ai_loading <- reactiveVal(FALSE)
 
   clear_err <- function() err_msg(NULL)
@@ -1017,6 +1594,7 @@ server <- function(input, output, session) {
   output$ui_ai_reporter <- renderUI({
     cred <- pick_llm_credentials(); has_key <- isTRUE(cred$ok); loading <- ai_loading()
     report <- ai_report_text(); orch <- ai_orchestrator_text(); an <- ai_analyst_text(); ch <- report_choices()
+    ttools <- ai_tools_trace_text()
     needs_ai <- input$ai_report_type %||% "" %in% c("brief", "stock", "movers", "news", "forex_brief", "forex_snapshot", "commodity_brief", "commodity_snapshot", "economic_brief", "economic_snapshot")
     prov_lab <- if (has_key) paste0(" (", cred$provider, ")") else ""
     if (needs_ai && !has_key) return(div(class = "ai-reporter-card", div(class = "ai-title", "Multi-agent AI analysis"), div(class = "ai-desc", "LLM-backed reports need a key in .env (Ollama Cloud preferred, or OpenAI)."), div(class = "ai-reporter-connect", p(style = "margin: 0; font-size: 0.9rem;", "Ollama Cloud: ", tags$a(href = "https://ollama.com/settings", target = "_blank", "ollama.com/settings"), ". OpenAI: OPENAI_API_KEY=sk-... in .env."))))
@@ -1025,21 +1603,29 @@ server <- function(input, output, session) {
         div(class = "ai-title", "Multi-agent AI analysis"),
         div(class = "ai-desc", paste0("Orchestrator → Market Analyst → Lead Editor run in sequence for each AI report", prov_lab, ". Trend reports use fetched data only (no LLM).")),
         selectInput("ai_report_type", "Report type", choices = ch, selected = if (!is.null(input$ai_report_type) && input$ai_report_type %in% ch) input$ai_report_type else ch[1]),
+        if (needs_ai && has_key) {
+          div(class = "ai-reporter-connect", style = "margin-top: 0.5rem;",
+            p(style = "margin: 0 0 0.35rem 0; font-weight: 700; font-size: 0.88rem; color: var(--accent);", "Tool calling (Alpha Vantage)"),
+            checkboxInput("ai_use_tools", "Enable: analyst may call Alpha Vantage APIs (Ollama or OpenAI tool chat; uses your current LLM provider)", value = isTRUE(input$ai_use_tools)),
+            p(style = "margin: 0.35rem 0 0 0; font-size: 0.78rem; color: var(--text-muted);", "If ", tags$code("OPENAI_API_KEY"), " is set, tool runs use ", strong("OpenAI"), " for all three agents (recommended). With only Ollama, tools use Ollama ", tags$code("/api/chat"), ". Restart the app after editing ", tags$code(".env"), ". Each tool call uses Alpha Vantage quota.")
+          )
+        } else NULL,
         actionButton("ai_generate", "Run analysis", class = "btn-primary")
       ),
       if (loading) div(class = "card-custom pulse", p(style = "margin: 0; color: var(--text-muted);", "Running 3-agent pipeline…")) else NULL,
       if (!loading && !is.null(report) && nzchar(report)) div(class = "card-custom", style = "margin-top: 1rem;", h4("Final brief"), div(class = "ai-report-output", report)) else NULL,
-      if (!loading && ((!is.null(orch) && nzchar(orch)) || (!is.null(an) && nzchar(an)))) div(class = "agent-pipeline",
+      if (!loading && ((!is.null(orch) && nzchar(orch)) || (!is.null(an) && nzchar(an)) || (!is.null(ttools) && nzchar(ttools)))) div(class = "agent-pipeline",
         p(style = "margin: 0 0 0.5rem 0; font-size: 0.8rem; color: var(--text-muted);", "Agent traces (intermediate outputs)"),
         if (!is.null(orch) && nzchar(orch)) tags$details(class = "agent-step", open = FALSE, tags$summary("1. Orchestrator — plan & gaps"), div(class = "agent-body", orch)) else NULL,
-        if (!is.null(an) && nzchar(an)) tags$details(class = "agent-step", open = FALSE, tags$summary("2. Market Analyst — evidence memo"), div(class = "agent-body", an)) else NULL
+        if (!is.null(an) && nzchar(an)) tags$details(class = "agent-step", open = FALSE, tags$summary("2. Market Analyst — evidence memo"), div(class = "agent-body", an)) else NULL,
+        if (!is.null(ttools) && nzchar(ttools)) tags$details(class = "agent-step", open = FALSE, tags$summary("Tool calls (Alpha Vantage)"), div(class = "agent-body", ttools)) else NULL
       ) else NULL
     )
   })
   observeEvent(input$ai_generate, {
     report_type <- input$ai_report_type %||% "brief"
     ai_loading(TRUE)
-    ai_report_text(NULL); ai_orchestrator_text(NULL); ai_analyst_text(NULL)
+    ai_report_text(NULL); ai_orchestrator_text(NULL); ai_analyst_text(NULL); ai_tools_trace_text(NULL)
     if (report_type == "stock_trend") { ai_loading(FALSE); ai_report_text(build_stock_trend_report()); return() }
     if (report_type == "forex_trend") { ai_loading(FALSE); ai_report_text(build_forex_trend_report()); return() }
     if (report_type == "commodity_trend") { ai_loading(FALSE); ai_report_text(build_value_trend_report(commodity_df(), paste0("Commodity (", input$commodity %||% "", ")"), "value")); return() }
@@ -1047,6 +1633,11 @@ server <- function(input, output, session) {
     cred <- pick_llm_credentials()
     if (!isTRUE(cred$ok)) { ai_loading(FALSE); return() }
     context <- build_ai_context(report_type)
+    use_tools <- isTRUE(input$ai_use_tools)
+    if (use_tools) {
+      oa <- openai_credentials()
+      if (!is.null(oa)) cred <- oa
+    }
     res <- tryCatch(
       withProgress(message = "Multi-agent analysis", value = 0, {
         run_agentic_pipeline(
@@ -1054,22 +1645,27 @@ server <- function(input, output, session) {
           section = input$section %||% "",
           context = context,
           cred = cred,
+          use_tools = use_tools,
           progress_fn = function(value, detail) setProgress(value, detail = detail)
         )
       }),
       error = function(e) {
-        list(ok = FALSE, error = conditionMessage(e), orchestrator = NULL, analyst = NULL, final = NULL)
+        list(ok = FALSE, error = conditionMessage(e), orchestrator = NULL, analyst = NULL, final = NULL, tools_trace = NULL)
       }
     )
     ai_loading(FALSE)
     if (!isTRUE(res$ok)) {
       if (!is.null(res$orchestrator)) ai_orchestrator_text(res$orchestrator)
       if (!is.null(res$analyst)) ai_analyst_text(res$analyst)
+      tt_err <- res$tools_trace
+      if (!is.null(tt_err) && length(tt_err) > 0L) ai_tools_trace_text(paste(tt_err, collapse = "\n\n")) else ai_tools_trace_text(NULL)
       set_err(simpleError(res$error %||% "Analysis failed."))
       return()
     }
     ai_orchestrator_text(res$orchestrator)
     ai_analyst_text(res$analyst)
+    tt <- res$tools_trace
+    if (!is.null(tt) && length(tt) > 0L) ai_tools_trace_text(paste(tt, collapse = "\n\n")) else ai_tools_trace_text(NULL)
     ai_report_text(res$final)
   })
 }

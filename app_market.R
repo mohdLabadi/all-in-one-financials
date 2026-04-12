@@ -168,14 +168,14 @@ llm_chat_messages <- function(messages, api_key, provider = c("ollama", "openai"
     last <- NULL
     for (attempt in 1:5) {
       if (attempt > 1L) {
-        if (is.null(last$status) || last$status != 429L) break
+        if (!identical(last$status, 429L)) break
         Sys.sleep(c(6, 15, 30, 45)[attempt - 1L])
       }
       last <- chat_once()
       if (isTRUE(last$ok)) return(list(ok = TRUE, text = last$text))
     }
     err <- last$error %||% "Chat request failed."
-    if (!is.null(last$status) && last$status == 429L) err <- paste0(err, rate_limit_429_hint())
+    if (identical(last$status, 429L)) err <- paste0(err, rate_limit_429_hint())
     return(list(ok = FALSE, error = err))
   } else {
     tryCatch({
@@ -873,14 +873,14 @@ openai_chat_completions_request <- function(messages, api_key, model = "gpt-4o-m
     last <- NULL
     for (attempt in 1:4) {
       if (attempt > 1L) {
-        if (is.null(last$status) || last$status != 429L) break
+        if (!identical(last$status, 429L)) break
         Sys.sleep(c(6, 15, 30)[attempt - 1L])
       }
       last <- openai_once()
       if (isTRUE(last$ok)) return(list(ok = TRUE, error = NULL, message = last$message, raw = last$raw))
     }
     err <- last$error %||% "OpenAI request failed."
-    if (!is.null(last$status) && last$status == 429L) err <- paste0(err, rate_limit_429_hint())
+    if (identical(last$status, 429L)) err <- paste0(err, rate_limit_429_hint())
     return(list(ok = FALSE, error = err, message = NULL, raw = NULL))
   } else {
     tryCatch({
@@ -934,14 +934,14 @@ ollama_chat_api_request <- function(messages, api_key, model = "gpt-oss:120b", t
     last <- NULL
     for (attempt in 1:4) {
       if (attempt > 1L) {
-        if (is.null(last$status) || last$status != 429L) break
+        if (!identical(last$status, 429L)) break
         Sys.sleep(c(6, 15, 30)[attempt - 1L])
       }
       last <- ollama_once()
       if (isTRUE(last$ok)) return(list(ok = TRUE, error = NULL, message = last$message))
     }
     err <- last$error %||% "Ollama request failed."
-    if (!is.null(last$status) && last$status == 429L) err <- paste0(err, rate_limit_429_hint())
+    if (identical(last$status, 429L)) err <- paste0(err, rate_limit_429_hint())
     return(list(ok = FALSE, error = err, message = NULL))
   } else {
     tryCatch({

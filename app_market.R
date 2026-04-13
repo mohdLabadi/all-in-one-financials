@@ -48,6 +48,37 @@ OPENAI_API_KEY <- trimws(Sys.getenv("OPENAI_API_KEY"))
 # ---- Alpha Vantage API (httr2 like reference, else httr) ----
 `%||%` <- function(x, y) if (is.null(x)) y else x
 base_url <- "https://www.alphavantage.co/query"
+av_cache_env <- new.env(parent = emptyenv())
+
+is_rate_limited_error <- function(msg) {
+  m <- tolower(as.character(msg %||% ""))
+  grepl("rate limit|5 requests|min|25/day|429|too many", m)
+}
+
+cache_put <- function(key, value) assign(key, value, envir = av_cache_env)
+cache_get <- function(key) if (exists(key, envir = av_cache_env, inherits = FALSE)) get(key, envir = av_cache_env, inherits = FALSE) else NULL
+
+safe_fetch_with_cache <- function(cache_key, fetch_fn) {
+  tryCatch({
+    out <- fetch_fn()
+    cache_put(cache_key, out)
+    list(ok = TRUE, data = out, fallback = FALSE, msg = NULL)
+  }, error = function(e) {
+    em <- conditionMessage(e)
+    if (is_rate_limited_error(em)) {
+      old <- cache_get(cache_key)
+      if (!is.null(old)) {
+        return(list(
+          ok = TRUE,
+          data = old,
+          fallback = TRUE,
+          msg = "Alpha Vantage limit reached. Showing last cached result for this query."
+        ))
+      }
+    }
+    list(ok = FALSE, error = em)
+  })
+}
 
 av_get <- function(params) {
   if (!nzchar(API_KEY)) stop("API key not set. Put API_KEY or ALPHAVANTAGE_API_KEY in .env in the app folder.")
@@ -205,9 +236,23 @@ llm_chat_messages <- function(messages, api_key, provider = c("ollama", "openai"
 }
 
 pick_llm_credentials <- function() {
-  if (nzchar(trimws(OLLAMA_CLOUD_API_KEY))) return(list(ok = TRUE, provider = "ollama", key = OLLAMA_CLOUD_API_KEY))
-  if (nzchar(trimws(OPENAI_API_KEY))) return(list(ok = TRUE, provider = "openai", key = OPENAI_API_KEY))
-  list(ok = FALSE, provider = NA_character_, key = "")
+  creds <- list()
+  if (nzchar(trimws(OLLAMA_CLOUD_API_KEY))) creds <- c(creds, list(list(provider = "ollama", key = OLLAMA_CLOUD_API_KEY)))
+  if (nzchar(trimws(OPENAI_API_KEY))) creds <- c(creds, list(list(provider = "openai", key = OPENAI_API_KEY)))
+  if (length(creds) == 0L) return(list(ok = FALSE, creds = list()))
+  list(ok = TRUE, creds = creds)
+}
+
+llm_chat_messages_with_fallback <- function(messages, creds) {
+  if (length(creds) == 0L) return(list(ok = FALSE, error = "No configured AI provider.", provider = NA_character_))
+  errs <- character(0)
+  for (i in seq_along(creds)) {
+    c0 <- creds[[i]]
+    out <- llm_chat_messages(messages, api_key = c0$key, provider = c0$provider)
+    if (isTRUE(out$ok)) return(list(ok = TRUE, text = out$text, provider = c0$provider))
+    errs <- c(errs, paste0(c0$provider, ": ", out$error %||% "Unknown error"))
+  }
+  list(ok = FALSE, error = paste(errs, collapse = " | "), provider = NA_character_)
 }
 
 truncate_ai_context <- function(text, max_chars = 12000L) {
@@ -320,6 +365,7 @@ section_display_name <- function(section) {
     forex = "Forex",
     commodity = "Commodities",
     economic = "Economic Indicators",
+    ai = "AI Reporter",
     as.character(section %||% "Market")
   )
 }
@@ -391,8 +437,8 @@ run_agentic_pipeline <- function(report_type, section, context, cred, progress_f
   )
   sec_name <- section_display_name(section)
   rtp_name <- report_type_display_name(report_type)
-  prov <- cred$provider
-  key <- cred$key
+  creds <- cred$creds
+  providers_used <- character(0)
   p <- function(value, detail) {
     if (is.function(progress_fn)) progress_fn(value, detail)
   }
@@ -402,14 +448,15 @@ run_agentic_pipeline <- function(report_type, section, context, cred, progress_f
     ctx
   )
   p(0.2, "Agent 1 — Orchestrator: planning themes and gaps…")
-  r1 <- llm_chat_messages(
+  r1 <- llm_chat_messages_with_fallback(
     list(
       list(role = "system", content = AGENT_SYSTEM_ORCHESTRATOR),
       list(role = "user", content = u1)
     ),
-    api_key = key, provider = prov
+    creds = creds
   )
-  if (!r1$ok) return(list(ok = FALSE, error = r1$error, orchestrator = NULL, analyst = NULL, final = NULL, rag_trace = rag$trace))
+  if (!r1$ok) return(list(ok = FALSE, error = r1$error, orchestrator = NULL, analyst = NULL, final = NULL, rag_trace = rag$trace, providers_used = providers_used))
+  providers_used <- c(providers_used, paste0("orchestrator=", r1$provider))
   orch <- r1$text
   Sys.sleep(2.2)
   u2 <- paste0(
@@ -417,14 +464,15 @@ run_agentic_pipeline <- function(report_type, section, context, cred, progress_f
     "FULL CONTEXT (same as Orchestrator — RAG + application data):\n", ctx
   )
   p(0.55, "Agent 2 — Market Analyst: evidence-based memo…")
-  r2 <- llm_chat_messages(
+  r2 <- llm_chat_messages_with_fallback(
     list(
       list(role = "system", content = AGENT_SYSTEM_ANALYST),
       list(role = "user", content = u2)
     ),
-    api_key = key, provider = prov
+    creds = creds
   )
-  if (!r2$ok) return(list(ok = FALSE, error = r2$error, orchestrator = orch, analyst = NULL, final = NULL, rag_trace = rag$trace))
+  if (!r2$ok) return(list(ok = FALSE, error = r2$error, orchestrator = orch, analyst = NULL, final = NULL, rag_trace = rag$trace, providers_used = providers_used))
+  providers_used <- c(providers_used, paste0("analyst=", r2$provider))
   an <- r2$text
   Sys.sleep(2.2)
   orch_short <- if (nchar(orch) > 1800L) paste0(substring(orch, 1L, 1800L), "\n[…]") else orch
@@ -434,16 +482,17 @@ run_agentic_pipeline <- function(report_type, section, context, cred, progress_f
     "MARKET ANALYST OUTPUT:\n", an
   )
   p(0.85, "Agent 3 — Lead Editor: final brief…")
-  r3 <- llm_chat_messages(
+  r3 <- llm_chat_messages_with_fallback(
     list(
       list(role = "system", content = AGENT_SYSTEM_EDITOR),
       list(role = "user", content = u3)
     ),
-    api_key = key, provider = prov
+    creds = creds
   )
-  if (!r3$ok) return(list(ok = FALSE, error = r3$error, orchestrator = orch, analyst = an, final = NULL, rag_trace = rag$trace))
+  if (!r3$ok) return(list(ok = FALSE, error = r3$error, orchestrator = orch, analyst = an, final = NULL, rag_trace = rag$trace, providers_used = providers_used))
+  providers_used <- c(providers_used, paste0("editor=", r3$provider))
   p(1, "Done")
-  list(ok = TRUE, error = NULL, orchestrator = orch, analyst = an, final = r3$text, rag_trace = rag$trace)
+  list(ok = TRUE, error = NULL, orchestrator = orch, analyst = an, final = r3$text, rag_trace = rag$trace, providers_used = providers_used)
 }
 
 # TIME_SERIES_DAILY: daily OHLCV. Build rows explicitly to avoid date/format issues (like 06_alphavantage_ai_report.R).
@@ -703,6 +752,11 @@ app_css <- "
   .agent-step { background: #f8fafc; border: 1px solid var(--border); border-radius: 10px; padding: 0.75rem 1rem; margin-bottom: 0.65rem; }
   .agent-step summary { font-weight: 700; font-size: 0.82rem; color: var(--accent); cursor: pointer; }
   .agent-step .agent-body { margin-top: 0.5rem; white-space: pre-wrap; font-size: 0.82rem; line-height: 1.5; color: var(--text); max-height: 280px; overflow-y: auto; }
+  .empty-state-card { background: #f8fafc; border: 1px dashed var(--border); border-radius: 10px; padding: 0.9rem 1rem; margin-bottom: 0.85rem; }
+  .empty-state-card .title { font-weight: 700; font-size: 0.86rem; color: var(--accent); margin-bottom: 0.25rem; }
+  .empty-state-card .desc { margin: 0; color: var(--text-muted); font-size: 0.82rem; line-height: 1.45; }
+  .status-pill { display: inline-block; padding: 0.18rem 0.55rem; border-radius: 999px; font-size: 0.72rem; font-weight: 700; border: 1px solid var(--border); background: #fff; color: var(--text-muted); margin-right: 0.35rem; }
+  .status-pill.ok { color: #065f46; border-color: #a7f3d0; background: #ecfdf5; }
   .pulse { animation: pulse 1.5s ease-in-out infinite; }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
 "
@@ -714,8 +768,8 @@ ui <- fluidPage(
     sidebarPanel(class = "sidebar", width = 3,
       selectInput("section", "Section",
         choices = c("Stock Daily" = "stock", "Top Gainers/Losers" = "gainers", "News & Sentiment" = "news", "Forex" = "forex",
-          "Commodities" = "commodity", "Economic Indicators" = "economic"),
-        selected = "stock"),
+          "Commodities" = "commodity", "Economic Indicators" = "economic", "AI Reporter" = "ai"),
+        selected = "ai"),
       conditionalPanel("input.section == 'stock'", textInput("stock_symbol", "Symbol", value = "AAPL", placeholder = "e.g. AAPL, MSFT"), checkboxInput("stock_full_history", "Full history (for 1-year trend)", value = FALSE), actionButton("fetch_stock", "Fetch", class = "btn-primary")),
       conditionalPanel("input.section == 'gainers'", actionButton("fetch_gainers", "Fetch movers", class = "btn-primary")),
       conditionalPanel("input.section == 'news'", textInput("news_tickers", "Tickers (optional)", placeholder = "AAPL, MSFT"), numericInput("news_limit", "Limit", value = 20, min = 1, max = 50), actionButton("fetch_news", "Fetch news", class = "btn-primary")),
@@ -729,13 +783,21 @@ ui <- fluidPage(
         column(
           width = 8,
           uiOutput("section_title"),
+          uiOutput("ui_section_help"),
+          conditionalPanel(
+            "input.section == 'ai'",
+            div(class = "card-custom", p(style = "margin:0; color: var(--text-muted);", "AI Reporter is available in the right panel. Fetch any data section first for best results, then click Generate report."))
+          ),
           p("Select a section and click Fetch to load data. View, filter, and Download use already-loaded data (no extra API calls).", class = "api-limit-note"),
+          uiOutput("api_fallback_ui"),
           uiOutput("api_error_ui"),
           conditionalPanel(
             "input.section == 'stock'",
             uiOutput("ui_stock_toolbar"),
             uiOutput("ui_stock_summary"),
             div(class = "plot-container", plotOutput("plot_stock")),
+            div(class = "plot-container", plotOutput("plot_stock_returns", height = "240px")),
+            uiOutput("ui_stock_calculator"),
             conditionalPanel("input.show_raw_data", DT::dataTableOutput("table_stock"))
           ),
           conditionalPanel(
@@ -753,6 +815,7 @@ ui <- fluidPage(
           conditionalPanel(
             "input.section == 'news'",
             uiOutput("ui_news_toolbar"),
+            div(class = "plot-container", plotOutput("plot_news_sentiment", height = "250px")),
             uiOutput("ui_news_cards"),
             conditionalPanel("input.show_raw_data", DT::dataTableOutput("table_news"))
           ),
@@ -761,6 +824,8 @@ ui <- fluidPage(
             uiOutput("ui_fx_toolbar"),
             uiOutput("ui_fx_summary"),
             div(class = "plot-container", plotOutput("plot_fx")),
+            div(class = "plot-container", plotOutput("plot_fx_returns", height = "240px")),
+            uiOutput("ui_fx_calculator"),
             conditionalPanel("input.show_raw_data", DT::dataTableOutput("table_fx"))
           ),
           conditionalPanel(
@@ -768,6 +833,8 @@ ui <- fluidPage(
             uiOutput("ui_commodity_toolbar"),
             uiOutput("ui_commodity_summary"),
             div(class = "plot-container", plotOutput("plot_commodity")),
+            div(class = "plot-container", plotOutput("plot_commodity_changes", height = "240px")),
+            uiOutput("ui_commodity_calculator"),
             conditionalPanel("input.show_raw_data", DT::dataTableOutput("table_commodity"))
           ),
           conditionalPanel(
@@ -789,6 +856,7 @@ ui <- fluidPage(
 
 server <- function(input, output, session) {
   err_msg <- reactiveVal(NULL)
+  fallback_msg <- reactiveVal(NULL)
   stock_df <- reactiveVal(NULL)
   gainers_data <- reactiveVal(NULL)
   news_df <- reactiveVal(NULL)
@@ -800,10 +868,19 @@ server <- function(input, output, session) {
   ai_orchestrator_text <- reactiveVal(NULL)
   ai_analyst_text <- reactiveVal(NULL)
   ai_rag_trace_text <- reactiveVal(NULL)
+  ai_stage_text <- reactiveVal(NULL)
+  ai_provider_trace <- reactiveVal(NULL)
   ai_loading <- reactiveVal(FALSE)
 
   clear_err <- function() err_msg(NULL)
+  clear_fallback <- function() fallback_msg(NULL)
   set_err <- function(e) err_msg(paste0("Error: ", conditionMessage(e)))
+  qmark <- function(label, tip) {
+    tagList(
+      tags$span(label),
+      tags$span(" ?", title = tip, style = "cursor: help; color: #0f766e; font-weight: 700; margin-left: 2px;")
+    )
+  }
 
   output$section_title <- renderUI({
     titles <- c(
@@ -812,7 +889,8 @@ server <- function(input, output, session) {
       news = "News & Sentiment",
       forex = "Forex",
       commodity = "Commodities",
-      economic = "Economic Indicators"
+      economic = "Economic Indicators",
+      ai = "AI Reporter"
     )
     tit <- titles[input$section]
     if (is.null(tit) || length(tit) == 0L || (length(tit) == 1L && is.na(tit))) tit <- input$section
@@ -823,20 +901,46 @@ server <- function(input, output, session) {
     if (is.null(err) || length(err) == 0L || !nzchar(err)) return(NULL)
     div(class = "card-custom", style = "border-left: 4px solid #dc2626; background: #fef2f2;", p(style = "margin: 0; color: #991b1b; font-weight: 600;", err))
   })
+  output$api_fallback_ui <- renderUI({
+    msg <- fallback_msg()
+    if (is.null(msg) || !nzchar(msg)) return(NULL)
+    div(class = "card-custom", style = "border-left: 4px solid #f59e0b; background: #fffbeb;", p(style = "margin: 0; color: #92400e; font-weight: 600;", msg))
+  })
+  output$ui_section_help <- renderUI({
+    sec <- input$section %||% "stock"
+    msg <- switch(sec,
+      stock = "Enter a symbol (example: AAPL), click Fetch, then use the toolbar to adjust the window.",
+      gainers = "Click Fetch movers to load gainers, losers, and active symbols. Use filter/chart toggles to narrow focus.",
+      news = "Optionally provide tickers (example: AAPL,MSFT), then filter stories by keyword or sentiment.",
+      forex = "Set From/To currencies (example: EUR/USD), fetch data, then inspect the trend and summary cards.",
+      commodity = "Choose a commodity and interval, fetch, then review latest level and range in the chart card.",
+      economic = "Choose an indicator and interval, fetch, then compare current value against period min/max.",
+      ai = "Use the AI Reporter panel to generate a 3-agent analysis from your currently fetched data.",
+      "Fetch data in this section first, then run AI analysis if needed."
+    )
+    div(class = "empty-state-card",
+      div(class = "title", "Quick start for this section"),
+      p(class = "desc", msg)
+    )
+  })
 
   # ---- Stock Daily ----
   observeEvent(input$fetch_stock, {
-    clear_err()
+    clear_err(); clear_fallback()
     tryCatch({
       sym <- trimws(input$stock_symbol %||% "")
       if (length(sym) == 0L || !nzchar(sym)) { set_err(simpleError("Please enter a symbol.")); return() }
       outsize <- if (isTRUE(input$stock_full_history)) "full" else "compact"
-      df <- av_stock_daily(sym, outputsize = outsize)
+      rk <- paste("stock", toupper(sym), outsize, sep = "|")
+      res <- safe_fetch_with_cache(rk, function() av_stock_daily(sym, outputsize = outsize))
+      if (!isTRUE(res$ok)) stop(res$error %||% "Fetch failed.")
+      df <- res$data
       if (is.null(df) || nrow(df) == 0) {
         set_err(simpleError("No data returned. Check API key, symbol, or rate limit (5/min, 25/day)."))
         stock_df(NULL)
       } else {
         stock_df(df)
+        if (isTRUE(res$fallback)) fallback_msg(res$msg %||% "Using cached data.")
       }
     }, error = set_err)
   })
@@ -844,6 +948,12 @@ server <- function(input, output, session) {
     if (is.null(stock_df()) || nrow(stock_df()) == 0) return(NULL)
     div(class = "toolbar",
         div(class = "toolbar-item toolbar-item-wide", span(class = "toolbar-label", "View"), selectInput("stock_days", NULL, choices = c("Last 5 days" = 5, "Last 21 days" = 21, "Last 60 days" = 60, "Last 90 days" = 90), selected = 90)),
+        div(class = "toolbar-item", checkboxInput("stock_show_ma", qmark("MA(20/50)", "Show 20-day and 50-day moving averages."), value = TRUE)),
+        div(class = "toolbar-item", checkboxInput("stock_show_bands", qmark("Bollinger", "Show Bollinger upper/lower volatility bands."), value = FALSE)),
+        div(class = "toolbar-item", numericInput("stock_calc_invest", qmark("Invest $", "How much capital to simulate in the position calculator."), value = 10000, min = 0, step = 100)),
+        div(class = "toolbar-item", numericInput("stock_calc_target", qmark("Target %", "Desired percent move used for projected P/L."), value = 5, min = -100, max = 500, step = 0.5)),
+        div(class = "toolbar-item", numericInput("stock_scn_days", qmark("Scenario days", "Number of future days to project on the chart."), value = 20, min = 1, max = 252, step = 1)),
+        div(class = "toolbar-item", numericInput("stock_scn_drift", qmark("Scenario daily %", "Assumed daily percent change for scenario path."), value = 0.2, min = -10, max = 10, step = 0.1)),
         div(class = "toolbar-item", downloadButton("download_stock_csv", "Download CSV", class = "btn btn-default")))
   })
   output$ui_stock_summary <- renderUI({
@@ -854,14 +964,36 @@ server <- function(input, output, session) {
     r <- df[1L, ]
     prev <- if (nrow(df) >= 2L) df$close[2L] else r$close
     chg <- if (is.finite(prev) && prev != 0) round(100 * (r$close - prev) / prev, 2) else NA
+    chg5 <- if (nrow(df) >= 6L && is.finite(df$close[6]) && df$close[6] != 0) round(100 * (r$close - df$close[6]) / df$close[6], 2) else NA
+    chg21 <- if (nrow(df) >= 22L && is.finite(df$close[22]) && df$close[22] != 0) round(100 * (r$close - df$close[22]) / df$close[22], 2) else NA
+    lret <- diff(log(as.numeric(df$close)))
+    lret <- lret[is.finite(lret)]
+    vol_ann <- if (length(lret) >= 5L) round(sd(lret) * sqrt(252) * 100, 1) else NA
     cl_class <- if (!is.na(chg)) if (chg >= 0) "value positive" else "value negative" else "value"
     chg_txt <- if (!is.na(chg)) paste0(if (chg >= 0) "+" else "", chg, "%") else "—"
+    chg5_txt <- if (!is.na(chg5)) paste0(if (chg5 >= 0) "+" else "", chg5, "%") else "—"
+    chg21_txt <- if (!is.na(chg21)) paste0(if (chg21 >= 0) "+" else "", chg21, "%") else "—"
+    cl5 <- if (!is.na(chg5)) if (chg5 >= 0) "value positive" else "value negative" else "value"
+    cl21 <- if (!is.na(chg21)) if (chg21 >= 0) "value positive" else "value negative" else "value"
+    regime <- if (nrow(df) >= 50L) {
+      ma20 <- mean(head(df$close, 20), na.rm = TRUE)
+      ma50 <- mean(head(df$close, 50), na.rm = TRUE)
+      if (is.finite(ma20) && is.finite(ma50)) if (ma20 >= ma50) "Bullish trend regime" else "Bearish trend regime" else "Regime unavailable"
+    } else {
+      "Regime unavailable (need 50+ days)"
+    }
     tagList(div(class = "stats-row",
       div(class = "stat-card card-custom", h4("Last close"), div(class = "value", sprintf("$%.2f", r$close))),
       div(class = "stat-card card-custom", h4("Change (1d)"), div(class = cl_class, chg_txt)),
+      div(class = "stat-card card-custom", h4("Change (1w)"), div(class = cl5, chg5_txt)),
+      div(class = "stat-card card-custom", h4("Change (1m)"), div(class = cl21, chg21_txt)),
       div(class = "stat-card card-custom", h4("High"), div(class = "value", sprintf("$%.2f", r$high %||% NA))),
       div(class = "stat-card card-custom", h4("Low"), div(class = "value", sprintf("$%.2f", r$low %||% NA))),
-      div(class = "stat-card card-custom", h4("Volume"), div(class = "value", format(as.numeric(r$volume %||% 0), big.mark = ",")))))
+      div(class = "stat-card card-custom", h4("Ann. volatility"), div(class = "value", if (!is.na(vol_ann)) paste0(vol_ann, "%") else "—")),
+      div(class = "stat-card card-custom", h4("Volume"), div(class = "value", format(as.numeric(r$volume %||% 0), big.mark = ",")))),
+      div(class = "card-custom", p(style = "margin: 0; color: var(--text-muted); font-size: 0.82rem;",
+        paste0("Signal: ", regime, ". This combines moving-average structure with recent returns to give quick context, not investment advice.")))
+    )
   })
   output$plot_stock <- renderPlot({
     df <- stock_df()
@@ -870,7 +1002,101 @@ server <- function(input, output, session) {
     df <- head(df, days)
     df <- df[!is.na(df$date) & is.finite(as.numeric(df$close)), ]
     if (nrow(df) == 0) return(NULL)
-    ggplot(df, aes(x = date, y = close)) + geom_line(color = "#0d9488", linewidth = 1) + geom_point(color = "#0d9488", size = 1.5) + labs(x = "Date", y = "Close", title = NULL) + theme_minimal(base_size = 12) + theme(panel.grid.minor = element_blank())
+    df <- df[order(df$date), ]
+    cls <- as.numeric(df$close)
+    ma20 <- as.numeric(stats::filter(cls, rep(1 / 20, 20), sides = 1))
+    ma50 <- as.numeric(stats::filter(cls, rep(1 / 50, 50), sides = 1))
+    sd20 <- vapply(seq_along(cls), function(i) {
+      if (i < 20) return(NA_real_)
+      stats::sd(cls[(i - 19):i], na.rm = TRUE)
+    }, numeric(1))
+    df$ma20 <- ma20
+    df$ma50 <- ma50
+    df$bb_up <- ma20 + 2 * sd20
+    df$bb_dn <- ma20 - 2 * sd20
+    p <- ggplot(df, aes(x = date)) +
+      geom_line(aes(y = close, color = "Close"), linewidth = 1) +
+      geom_point(aes(y = close, color = "Close"), size = 1.2, show.legend = FALSE) +
+      labs(x = "Date", y = "Close", title = NULL) +
+      theme_minimal(base_size = 12) +
+      theme(panel.grid.minor = element_blank())
+    if (isTRUE(input$stock_show_ma)) {
+      p <- p +
+        geom_line(aes(y = ma20, color = "MA20"), linewidth = 0.9, na.rm = TRUE) +
+        geom_line(aes(y = ma50, color = "MA50"), linewidth = 0.9, na.rm = TRUE)
+    }
+    if (isTRUE(input$stock_show_bands)) {
+      p <- p +
+        geom_line(aes(y = bb_up, color = "Bollinger Upper"), linetype = "dashed", linewidth = 0.8, na.rm = TRUE) +
+        geom_line(aes(y = bb_dn, color = "Bollinger Lower"), linetype = "dashed", linewidth = 0.8, na.rm = TRUE)
+    }
+    scn_days <- as.integer(input$stock_scn_days %||% 20)
+    scn_drift <- as.numeric(input$stock_scn_drift %||% 0)
+    if (is.finite(scn_days) && scn_days > 0 && is.finite(scn_drift)) {
+      last_dt <- max(df$date, na.rm = TRUE)
+      last_px <- as.numeric(tail(df$close, 1))
+      if (is.finite(last_px) && last_px > 0) {
+        fut_dates <- seq.Date(last_dt + 1, by = "day", length.out = scn_days)
+        fut_px <- last_px * cumprod(rep(1 + scn_drift / 100, scn_days))
+        scn <- data.frame(date = fut_dates, close = fut_px)
+        p <- p +
+          geom_line(data = scn, aes(x = date, y = close, color = "Scenario"), linewidth = 1, linetype = "dotdash") +
+          geom_point(data = scn[nrow(scn), , drop = FALSE], aes(x = date, y = close), color = "#f59e0b", size = 2) +
+          labs(subtitle = "Orange line: user-defined scenario path")
+      }
+    }
+    p <- p + scale_color_manual(
+      name = "Series",
+      values = c(
+        "Close" = "#0d9488",
+        "MA20" = "#2563eb",
+        "MA50" = "#7c3aed",
+        "Bollinger Upper" = "#94a3b8",
+        "Bollinger Lower" = "#64748b",
+        "Scenario" = "#f59e0b"
+      )
+    )
+    p
+  })
+  output$plot_stock_returns <- renderPlot({
+    df <- stock_df()
+    if (is.null(df) || nrow(df) < 3L) return(NULL)
+    days <- as.integer(input$stock_days %||% 90)
+    df <- head(df, days)
+    df <- df[order(df$date), ]
+    ret <- 100 * (as.numeric(df$close) / dplyr::lag(as.numeric(df$close)) - 1)
+    r2 <- data.frame(date = df$date, ret = ret)
+    r2 <- r2[is.finite(r2$ret), ]
+    if (nrow(r2) < 2) return(NULL)
+    r2$direction <- ifelse(r2$ret >= 0, "Up day", "Down day")
+    ggplot(r2, aes(x = date, y = ret, fill = direction)) +
+      geom_col(width = 0.9) +
+      scale_fill_manual(name = "Return sign", values = c("Up day" = "#059669", "Down day" = "#dc2626")) +
+      geom_hline(yintercept = 0, color = "#94a3b8", linewidth = 0.6) +
+      labs(x = "Date", y = "Daily return (%)", title = "Return bars (up/down days)") +
+      theme_minimal(base_size = 12) +
+      theme(panel.grid.minor = element_blank())
+  })
+  output$ui_stock_calculator <- renderUI({
+    df <- stock_df()
+    if (is.null(df) || nrow(df) == 0) return(NULL)
+    px <- as.numeric(df$close[1])
+    invest <- as.numeric(input$stock_calc_invest %||% 0)
+    tgt <- as.numeric(input$stock_calc_target %||% 0)
+    if (!is.finite(px) || px <= 0) return(NULL)
+    shares <- if (is.finite(invest) && invest > 0) invest / px else 0
+    tgt_px <- px * (1 + tgt / 100)
+    pnl <- shares * (tgt_px - px)
+    div(class = "card-custom",
+      h4("Position calculator"),
+      div(class = "stats-row",
+        div(class = "stat-card card-custom", h4("Implied shares"), div(class = "value", sprintf("%.2f", shares))),
+        div(class = "stat-card card-custom", h4("Current price"), div(class = "value", sprintf("$%.2f", px))),
+        div(class = "stat-card card-custom", h4("Target price"), div(class = "value", sprintf("$%.2f", tgt_px))),
+        div(class = "stat-card card-custom", h4("Projected P/L"), div(class = if (pnl >= 0) "value positive" else "value negative", sprintf("$%.2f", pnl)))
+      ),
+      p(style = "margin: 0; color: var(--text-muted); font-size: 0.8rem;", "Educational what-if only; ignores fees, slippage, and taxes.")
+    )
   })
   output$table_stock <- renderDT({
     df <- stock_df()
@@ -881,15 +1107,18 @@ server <- function(input, output, session) {
 
   # ---- Top Gainers / Losers ----
   observeEvent(input$fetch_gainers, {
-    clear_err()
+    clear_err(); clear_fallback()
     tryCatch({
-      d <- av_top_gainers_losers()
+      res <- safe_fetch_with_cache("gainers|default", function() av_top_gainers_losers())
+      if (!isTRUE(res$ok)) stop(res$error %||% "Fetch failed.")
+      d <- res$data
       ng <- nrow(d$top_gainers %||% data.frame())
       if (ng == 0) {
         set_err(simpleError("No data returned. Check API key or rate limit (5/min, 25/day)."))
         gainers_data(NULL)
       } else {
         gainers_data(d)
+        if (isTRUE(res$fallback)) fallback_msg(res$msg %||% "Using cached data.")
       }
     }, error = set_err)
   })
@@ -957,23 +1186,30 @@ server <- function(input, output, session) {
 
   # ---- News ----
   observeEvent(input$fetch_news, {
-    clear_err()
+    clear_err(); clear_fallback()
     tryCatch({
-      df <- av_news_sentiment(tickers = trimws(input$news_tickers), limit = as.integer(input$news_limit))
+      tk <- trimws(input$news_tickers %||% "")
+      lim <- as.integer(input$news_limit)
+      rk <- paste("news", tolower(tk), lim, sep = "|")
+      res <- safe_fetch_with_cache(rk, function() av_news_sentiment(tickers = tk, limit = lim))
+      if (!isTRUE(res$ok)) stop(res$error %||% "Fetch failed.")
+      df <- res$data
       if (is.null(df) || nrow(df) == 0) {
         set_err(simpleError("No news returned. Check API key or rate limit (5/min, 25/day)."))
         news_df(NULL)
       } else {
         news_df(df)
+        if (isTRUE(res$fallback)) fallback_msg(res$msg %||% "Using cached data.")
       }
     }, error = set_err)
   })
   output$ui_news_toolbar <- renderUI({
     df <- news_df(); if (is.null(df) || nrow(df) == 0) return(NULL)
     div(class = "toolbar",
-        div(class = "toolbar-item", span(class = "toolbar-label", "Show"), selectInput("news_n", NULL, choices = c(10, 25, 50), selected = 50)),
-        div(class = "toolbar-item", span(class = "toolbar-label", "Keyword"), textInput("news_keyword", NULL, placeholder = "e.g. Fed")),
-        div(class = "toolbar-item", span(class = "toolbar-label", "Sentiment"), selectInput("news_sentiment_filter", NULL, choices = c("All", "Bullish", "Bearish", "Neutral"), selected = "All")),
+        div(class = "toolbar-item", span(class = "toolbar-label", qmark("Show", "Maximum number of headlines to display.")), selectInput("news_n", NULL, choices = c(10, 25, 50), selected = 50)),
+        div(class = "toolbar-item", span(class = "toolbar-label", qmark("Keyword", "Filter headlines containing this text.")), textInput("news_keyword", NULL, placeholder = "e.g. Fed")),
+        div(class = "toolbar-item", span(class = "toolbar-label", qmark("Sentiment", "Filter by bullish, bearish, or neutral labels.")), selectInput("news_sentiment_filter", NULL, choices = c("All", "Bullish", "Bearish", "Neutral"), selected = "All")),
+        div(class = "toolbar-item", checkboxInput("news_show_dist", qmark("Show sentiment mix", "Toggle sentiment distribution chart."), value = TRUE)),
         div(class = "toolbar-item", downloadButton("download_news_csv", "Download CSV", class = "btn btn-default")))
   })
   news_filtered <- reactive({
@@ -992,6 +1228,25 @@ server <- function(input, output, session) {
     })
     tagList(cards)
   })
+  output$plot_news_sentiment <- renderPlot({
+    if (!isTRUE(input$news_show_dist)) return(NULL)
+    df <- news_filtered()
+    if (is.null(df) || nrow(df) == 0 || !"overall_sentiment_label" %in% names(df)) return(NULL)
+    lbl <- tolower(as.character(df$overall_sentiment_label %||% ""))
+    cls <- ifelse(grepl("bullish|positive", lbl), "Bullish",
+      ifelse(grepl("bearish|negative", lbl), "Bearish", "Neutral"))
+    dist <- as.data.frame(table(factor(cls, levels = c("Bullish", "Neutral", "Bearish"))), stringsAsFactors = FALSE)
+    names(dist) <- c("sentiment", "n")
+    dist$n <- as.numeric(dist$n)
+    if (!any(dist$n > 0)) return(NULL)
+    ggplot(dist, aes(x = sentiment, y = n, fill = sentiment)) +
+      geom_col(width = 0.65) +
+      geom_text(aes(label = n), vjust = -0.35, size = 4) +
+      scale_fill_manual(name = "Sentiment", values = c(Bullish = "#059669", Neutral = "#64748b", Bearish = "#dc2626")) +
+      labs(x = NULL, y = "Headline count", title = "Sentiment distribution (filtered set)") +
+      theme_minimal(base_size = 12) +
+      theme(panel.grid.minor = element_blank())
+  })
   output$download_news_csv <- downloadHandler(filename = function() paste0("news_", Sys.Date(), ".csv"), content = function(file) { df <- news_df(); if (!is.null(df) && nrow(df) > 0) write.csv(df, file, row.names = FALSE) })
   output$table_news <- renderDT({
     df <- news_df(); if (is.null(df) || nrow(df) == 0) return(DT::datatable(data.frame(), options = list(pageLength = 15)))
@@ -1001,23 +1256,31 @@ server <- function(input, output, session) {
 
   # ---- Forex ----
   observeEvent(input$fetch_fx, {
-    clear_err()
+    clear_err(); clear_fallback()
     tryCatch({
       from <- trimws(input$fx_from %||% ""); to <- trimws(input$fx_to %||% "")
       if (!nzchar(from) || !nzchar(to)) { set_err(simpleError("Enter From and To currencies.")); return() }
-      df <- av_fx_daily(from_symbol = from, to_symbol = to)
+      rk <- paste("fx", toupper(from), toupper(to), sep = "|")
+      res <- safe_fetch_with_cache(rk, function() av_fx_daily(from_symbol = from, to_symbol = to))
+      if (!isTRUE(res$ok)) stop(res$error %||% "Fetch failed.")
+      df <- res$data
       if (is.null(df) || nrow(df) == 0) {
         set_err(simpleError("No FX data returned. Check API key or rate limit (5/min, 25/day)."))
         fx_df(NULL)
       } else {
         fx_df(df)
+        if (isTRUE(res$fallback)) fallback_msg(res$msg %||% "Using cached data.")
       }
     }, error = set_err)
   })
   output$ui_fx_toolbar <- renderUI({
     if (is.null(fx_df()) || nrow(fx_df()) == 0) return(NULL)
     div(class = "toolbar",
-        div(class = "toolbar-item", span(class = "toolbar-label", "Chart points"), selectInput("fx_points", NULL, choices = c(30, 60, 90), selected = 90)),
+        div(class = "toolbar-item", span(class = "toolbar-label", qmark("Chart points", "How many historical points to display in charts.")), selectInput("fx_points", NULL, choices = c(30, 60, 90), selected = 90)),
+        div(class = "toolbar-item", numericInput("fx_calc_amount", qmark("Amount", "Base currency amount for conversion calculator."), value = 1000, min = 0, step = 100)),
+        div(class = "toolbar-item", numericInput("fx_calc_shift", qmark("Rate shock %", "One-time percentage shift used in stress calculation."), value = 1, min = -50, max = 50, step = 0.1)),
+        div(class = "toolbar-item", numericInput("fx_scn_days", qmark("Scenario days", "Number of future periods in scenario projection."), value = 15, min = 1, max = 180, step = 1)),
+        div(class = "toolbar-item", numericInput("fx_scn_drift", qmark("Scenario daily %", "Assumed daily % move for projected path."), value = 0.05, min = -5, max = 5, step = 0.01)),
         div(class = "toolbar-item", downloadButton("download_fx_csv", "Download CSV", class = "btn btn-default")))
   })
   output$ui_fx_summary <- renderUI({
@@ -1027,7 +1290,65 @@ server <- function(input, output, session) {
   output$plot_fx <- renderPlot({
     df <- fx_df(); if (is.null(df) || nrow(df) == 0) return(NULL); pts <- as.integer(input$fx_points %||% 90); df <- head(df, pts)
     df <- df[!is.na(df$date) & is.finite(as.numeric(df$close)), ]; if (nrow(df) == 0) return(NULL)
-    ggplot(df, aes(x = date, y = close)) + geom_line(color = "#0d9488", linewidth = 1) + labs(x = "Date", y = "Close", title = NULL) + theme_minimal(base_size = 12) + theme(panel.grid.minor = element_blank())
+    p <- ggplot(df, aes(x = date)) +
+      geom_line(aes(y = close, color = "Observed")) +
+      labs(x = "Date", y = "Close", title = NULL) + theme_minimal(base_size = 12) + theme(panel.grid.minor = element_blank())
+    scn_days <- as.integer(input$fx_scn_days %||% 15)
+    scn_drift <- as.numeric(input$fx_scn_drift %||% 0)
+    if (is.finite(scn_days) && scn_days > 0 && is.finite(scn_drift)) {
+      dfo <- df[order(df$date), ]
+      last_dt <- tail(dfo$date, 1)
+      last_px <- as.numeric(tail(dfo$close, 1))
+      if (is.finite(last_px) && last_px > 0) {
+        fut_dates <- seq.Date(last_dt + 1, by = "day", length.out = scn_days)
+        fut_px <- last_px * cumprod(rep(1 + scn_drift / 100, scn_days))
+        scn <- data.frame(date = fut_dates, close = fut_px)
+        p <- p +
+          geom_line(data = scn, aes(x = date, y = close, color = "Scenario"), linewidth = 1, linetype = "dotdash") +
+          geom_point(data = scn[nrow(scn), , drop = FALSE], aes(x = date, y = close), color = "#f97316", size = 2) +
+          labs(subtitle = "Orange path: user-defined FX scenario")
+      }
+    }
+    p <- p + scale_color_manual(name = "Line", values = c("Observed" = "#0d9488", "Scenario" = "#f97316"))
+    p
+  })
+  output$plot_fx_returns <- renderPlot({
+    df <- fx_df(); if (is.null(df) || nrow(df) < 3L) return(NULL); pts <- as.integer(input$fx_points %||% 90); df <- head(df, pts)
+    df <- df[order(df$date), ]
+    ret <- 100 * (as.numeric(df$close) / dplyr::lag(as.numeric(df$close)) - 1)
+    r2 <- data.frame(date = df$date, ret = ret)
+    r2 <- r2[is.finite(r2$ret), ]
+    if (nrow(r2) < 2) return(NULL)
+    r2$direction <- ifelse(r2$ret >= 0, "Positive", "Negative")
+    ggplot(r2, aes(x = date, y = ret)) +
+      geom_col(aes(fill = direction), width = 0.9) +
+      geom_smooth(aes(color = "Trend"), method = "loess", se = FALSE, linewidth = 0.8) +
+      scale_fill_manual(name = "Return sign", values = c("Positive" = "#14b8a6", "Negative" = "#f97316")) +
+      scale_color_manual(name = "", values = c("Trend" = "#334155")) +
+      labs(x = "Date", y = "Return (%)", title = "FX return momentum with smooth trend") +
+      theme_minimal(base_size = 12) +
+      theme(panel.grid.minor = element_blank())
+  })
+  output$ui_fx_calculator <- renderUI({
+    df <- fx_df(); if (is.null(df) || nrow(df) == 0) return(NULL)
+    rate <- as.numeric(df$close[1]); if (!is.finite(rate) || rate <= 0) return(NULL)
+    amt <- as.numeric(input$fx_calc_amount %||% 0)
+    shock <- as.numeric(input$fx_calc_shift %||% 0)
+    converted <- amt * rate
+    shocked_rate <- rate * (1 + shock / 100)
+    shocked_value <- amt * shocked_rate
+    delta <- shocked_value - converted
+    pair <- paste0(toupper(input$fx_from %||% "FROM"), "/", toupper(input$fx_to %||% "TO"))
+    div(class = "card-custom",
+      h4("FX conversion and stress calculator"),
+      div(class = "stats-row",
+        div(class = "stat-card card-custom", h4("Pair"), div(class = "value", pair)),
+        div(class = "stat-card card-custom", h4("Current conversion"), div(class = "value", sprintf("%.2f", converted))),
+        div(class = "stat-card card-custom", h4("Shocked value"), div(class = "value", sprintf("%.2f", shocked_value))),
+        div(class = "stat-card card-custom", h4("Value change"), div(class = if (delta >= 0) "value positive" else "value negative", sprintf("%.2f", delta)))
+      ),
+      p(style = "margin: 0; color: var(--text-muted); font-size: 0.8rem;", "Stress result applies a simple percentage shock to latest close rate.")
+    )
   })
   output$table_fx <- renderDT({ df <- fx_df(); if (is.null(df) || nrow(df) == 0) return(DT::datatable(data.frame(), options = list(pageLength = 15))); DT::datatable(as.data.frame(df), options = list(pageLength = 15)) })
   output$download_fx_csv <- downloadHandler(filename = function() paste0("fx_", input$fx_from %||% "from", "_", input$fx_to %||% "to", "_", Sys.Date(), ".csv"), content = function(file) { df <- fx_df(); if (!is.null(df) && nrow(df) > 0) write.csv(df, file, row.names = FALSE) })
@@ -1054,11 +1375,26 @@ server <- function(input, output, session) {
   })
 
   # ---- Commodity ----
-  observeEvent(input$fetch_commodity, { clear_err(); tryCatch({ commodity_df(av_commodity(commodity = input$commodity, interval = input$commodity_interval)) }, error = set_err) })
+  observeEvent(input$fetch_commodity, {
+    clear_err(); clear_fallback()
+    tryCatch({
+      com <- input$commodity %||% "WHEAT"
+      int <- input$commodity_interval %||% "monthly"
+      rk <- paste("commodity", com, int, sep = "|")
+      res <- safe_fetch_with_cache(rk, function() av_commodity(commodity = com, interval = int))
+      if (!isTRUE(res$ok)) stop(res$error %||% "Fetch failed.")
+      commodity_df(res$data)
+      if (isTRUE(res$fallback)) fallback_msg(res$msg %||% "Using cached data.")
+    }, error = set_err)
+  })
   output$ui_commodity_toolbar <- renderUI({
     if (is.null(commodity_df()) || nrow(commodity_df()) == 0) return(NULL)
     div(class = "toolbar",
-        div(class = "toolbar-item", span(class = "toolbar-label", "Chart points"), selectInput("commodity_points", NULL, choices = c(30, 60, 90), selected = 60)),
+        div(class = "toolbar-item", span(class = "toolbar-label", qmark("Chart points", "How many commodity observations to display.")), selectInput("commodity_points", NULL, choices = c(30, 60, 90), selected = 60)),
+        div(class = "toolbar-item", numericInput("commodity_calc_units", qmark("Units", "Quantity used in notional and P/L scenario calculator."), value = 100, min = 0, step = 1)),
+        div(class = "toolbar-item", numericInput("commodity_calc_move", qmark("Price move %", "One-time price change used in scenario notional."), value = 3, min = -80, max = 200, step = 0.5)),
+        div(class = "toolbar-item", numericInput("commodity_scn_steps", qmark("Scenario steps", "Future periods projected on scenario line."), value = 12, min = 1, max = 120, step = 1)),
+        div(class = "toolbar-item", numericInput("commodity_scn_drift", qmark("Scenario step %", "Assumed percent move per projected step."), value = 0.5, min = -30, max = 30, step = 0.1)),
         div(class = "toolbar-item", downloadButton("download_commodity_csv", "Download CSV", class = "btn btn-default")))
   })
   output$ui_commodity_summary <- renderUI({
@@ -1074,24 +1410,91 @@ server <- function(input, output, session) {
     df[[ycol]] <- as.numeric(df[[ycol]])
     df <- df[!is.na(df[[xcol]]) & is.finite(df[[ycol]]), ]
     if (nrow(df) == 0) return(NULL)
-    ggplot(df, aes(x = .data[[xcol]], y = .data[[ycol]])) + geom_line(color = "#0d9488", linewidth = 1) + labs(x = xcol, y = ycol, title = NULL) + theme_minimal(base_size = 12) + theme(panel.grid.minor = element_blank())
+    p <- ggplot(df, aes(x = .data[[xcol]])) + geom_line(aes(y = .data[[ycol]], color = "Observed"), linewidth = 1) + labs(x = xcol, y = ycol, title = NULL) + theme_minimal(base_size = 12) + theme(panel.grid.minor = element_blank())
+    scn_steps <- as.integer(input$commodity_scn_steps %||% 12)
+    scn_drift <- as.numeric(input$commodity_scn_drift %||% 0)
+    if (is.finite(scn_steps) && scn_steps > 0 && is.finite(scn_drift)) {
+      dfo <- df[order(df[[xcol]]), ]
+      last_dt <- tail(dfo[[xcol]], 1)
+      last_v <- as.numeric(tail(dfo[[ycol]], 1))
+      if (inherits(last_dt, "Date") && is.finite(last_v) && last_v > 0) {
+        fut_dates <- seq.Date(last_dt + 1, by = "day", length.out = scn_steps)
+        fut_vals <- last_v * cumprod(rep(1 + scn_drift / 100, scn_steps))
+        scn <- data.frame(date = fut_dates, value = fut_vals)
+        p <- p +
+          geom_line(data = scn, aes(x = date, y = value, color = "Scenario"), linewidth = 1, linetype = "dotdash") +
+          geom_point(data = scn[nrow(scn), , drop = FALSE], aes(x = date, y = value), color = "#f59e0b", size = 2) +
+          labs(subtitle = "Orange path: user-defined commodity scenario")
+      }
+    }
+    p <- p + scale_color_manual(name = "Line", values = c("Observed" = "#0d9488", "Scenario" = "#f59e0b"))
+    p
+  })
+  output$plot_commodity_changes <- renderPlot({
+    df <- commodity_df()
+    if (is.null(df) || nrow(df) < 3) return(NULL)
+    pts <- as.integer(input$commodity_points %||% 60); df <- head(df, pts)
+    xcol <- if ("date" %in% names(df)) "date" else names(df)[1]
+    ycol <- if ("value" %in% names(df)) "value" else names(df)[2]
+    df[[ycol]] <- as.numeric(df[[ycol]])
+    df <- df[!is.na(df[[xcol]]) & is.finite(df[[ycol]]), ]
+    if (nrow(df) < 3) return(NULL)
+    df <- df[order(df[[xcol]]), ]
+    df$chg <- 100 * (df[[ycol]] / dplyr::lag(df[[ycol]]) - 1)
+    df <- df[is.finite(df$chg), ]
+    if (nrow(df) == 0) return(NULL)
+    df$direction <- ifelse(df$chg >= 0, "Increase", "Decrease")
+    ggplot(df, aes(x = .data[[xcol]], y = chg, fill = direction)) +
+      geom_col(width = 0.9) +
+      geom_hline(yintercept = 0, color = "#94a3b8", linewidth = 0.6) +
+      scale_fill_manual(name = "Change sign", values = c("Increase" = "#059669", "Decrease" = "#dc2626")) +
+      labs(x = xcol, y = "Period change (%)", title = "Commodity change bars") +
+      theme_minimal(base_size = 12) +
+      theme(panel.grid.minor = element_blank())
+  })
+  output$ui_commodity_calculator <- renderUI({
+    df <- commodity_df(); if (is.null(df) || nrow(df) == 0) return(NULL)
+    ycol <- if ("value" %in% names(df)) "value" else names(df)[2]
+    px <- as.numeric(df[[ycol]][1]); if (!is.finite(px) || px <= 0) return(NULL)
+    units <- as.numeric(input$commodity_calc_units %||% 0)
+    move <- as.numeric(input$commodity_calc_move %||% 0)
+    base <- units * px
+    shock_px <- px * (1 + move / 100)
+    shock_val <- units * shock_px
+    pnl <- shock_val - base
+    div(class = "card-custom",
+      h4("Commodity scenario calculator"),
+      div(class = "stats-row",
+        div(class = "stat-card card-custom", h4("Units"), div(class = "value", format(units, big.mark = ","))),
+        div(class = "stat-card card-custom", h4("Current notional"), div(class = "value", sprintf("%.2f", base))),
+        div(class = "stat-card card-custom", h4("Scenario notional"), div(class = "value", sprintf("%.2f", shock_val))),
+        div(class = "stat-card card-custom", h4("Scenario P/L"), div(class = if (pnl >= 0) "value positive" else "value negative", sprintf("%.2f", pnl)))
+      ),
+      p(style = "margin: 0; color: var(--text-muted); font-size: 0.8rem;", "Simple sensitivity estimate using latest displayed value and user-defined percentage move.")
+    )
   })
   output$table_commodity <- renderDT({ df <- commodity_df(); if (is.null(df) || nrow(df) == 0) return(DT::datatable(data.frame(), options = list(pageLength = 15))); DT::datatable(as.data.frame(df), options = list(pageLength = 15)) })
   output$download_commodity_csv <- downloadHandler(filename = function() paste0("commodity_", input$commodity %||% "", "_", Sys.Date(), ".csv"), content = function(file) { df <- commodity_df(); if (!is.null(df) && nrow(df) > 0) write.csv(df, file, row.names = FALSE) })
 
   # ---- Economic ----
   observeEvent(input$fetch_economic, {
-    clear_err()
+    clear_err(); clear_fallback()
     tryCatch({
       ind <- input$economic_indicator
       int <- input$economic_interval
-      if (ind == "TREASURY_YIELD") {
-        economic_df(av_economic(indicator = ind, interval = int, maturity = "10year"))
-      } else if (ind == "REAL_GDP") {
-        economic_df(av_economic(indicator = ind, interval = if (int %in% c("quarterly", "annual")) int else "annual"))
-      } else {
-        economic_df(av_economic(indicator = ind, interval = int))
-      }
+      rk <- paste("economic", ind, int, sep = "|")
+      res <- safe_fetch_with_cache(rk, function() {
+        if (ind == "TREASURY_YIELD") {
+          av_economic(indicator = ind, interval = int, maturity = "10year")
+        } else if (ind == "REAL_GDP") {
+          av_economic(indicator = ind, interval = if (int %in% c("quarterly", "annual")) int else "annual")
+        } else {
+          av_economic(indicator = ind, interval = int)
+        }
+      })
+      if (!isTRUE(res$ok)) stop(res$error %||% "Fetch failed.")
+      economic_df(res$data)
+      if (isTRUE(res$fallback)) fallback_msg(res$msg %||% "Using cached data.")
     }, error = set_err)
   })
   output$ui_economic_toolbar <- renderUI({
@@ -1178,7 +1581,8 @@ server <- function(input, output, session) {
     report <- ai_report_text(); orch <- ai_orchestrator_text(); an <- ai_analyst_text(); ch <- report_choices()
     ragtr <- ai_rag_trace_text()
     needs_ai <- input$ai_report_type %||% "" %in% c("brief", "stock", "movers", "news", "forex_brief", "forex_snapshot", "commodity_brief", "commodity_snapshot", "economic_brief", "economic_snapshot")
-    prov_lab <- if (has_key) paste0(" (", cred$provider, ")") else ""
+    providers <- if (has_key) unique(vapply(cred$creds, function(z) z$provider, character(1))) else character(0)
+    prov_lab <- if (length(providers) > 0) paste0(" (available: ", paste(providers, collapse = ", "), ")") else ""
     if (needs_ai && !has_key) return(div(class = "ai-reporter-card", div(class = "ai-title", "Multi-agent AI analysis"), div(class = "ai-desc", "LLM-backed reports need a key in .env (Ollama Cloud preferred, or OpenAI)."), div(class = "ai-reporter-connect", p(style = "margin: 0; font-size: 0.9rem;", "Ollama Cloud: ", tags$a(href = "https://ollama.com/settings", target = "_blank", "ollama.com/settings"), ". OpenAI: OPENAI_API_KEY=sk-... in .env."))))
     tagList(
       div(class = "ai-reporter-card",
@@ -1190,7 +1594,7 @@ server <- function(input, output, session) {
             p(style = "margin: 0; font-size: 0.78rem; color: var(--text-muted);", "RAG: edit ", tags$code("data/rag_market_corpus.txt"), " (chunks separated by ", tags$code("---"), ") to change reference notes. No LLM tool calling.")
           )
         } else NULL,
-        actionButton("ai_generate", "Run analysis", class = "btn-primary")
+        actionButton("ai_generate", "Generate report", class = "btn-primary")
       ),
       if (loading) div(class = "card-custom pulse", p(style = "margin: 0; color: var(--text-muted);", "Running 3-agent pipeline…")) else NULL,
       if (!loading && !is.null(report) && nzchar(report)) div(class = "card-custom", style = "margin-top: 1rem;", h4("Final brief"), div(class = "ai-report-output", report)) else NULL,
@@ -1205,16 +1609,19 @@ server <- function(input, output, session) {
   observeEvent(input$ai_generate, {
     report_type <- input$ai_report_type %||% "brief"
     ai_loading(TRUE)
+    ai_stage_text("Preparing analysis context...")
+    ai_provider_trace(NULL)
     ai_report_text(NULL); ai_orchestrator_text(NULL); ai_analyst_text(NULL); ai_rag_trace_text(NULL)
-    if (report_type == "stock_trend") { ai_loading(FALSE); ai_report_text(build_stock_trend_report()); return() }
-    if (report_type == "forex_trend") { ai_loading(FALSE); ai_report_text(build_forex_trend_report()); return() }
-    if (report_type == "commodity_trend") { ai_loading(FALSE); ai_report_text(build_value_trend_report(commodity_df(), paste0("Commodity (", input$commodity %||% "", ")"), "value")); return() }
-    if (report_type == "economic_trend") { ai_loading(FALSE); ai_report_text(build_value_trend_report(economic_df(), paste0("Indicator (", input$economic_indicator %||% "", ")"), "value")); return() }
+    if (report_type == "stock_trend") { ai_loading(FALSE); ai_stage_text(NULL); ai_report_text(build_stock_trend_report()); return() }
+    if (report_type == "forex_trend") { ai_loading(FALSE); ai_stage_text(NULL); ai_report_text(build_forex_trend_report()); return() }
+    if (report_type == "commodity_trend") { ai_loading(FALSE); ai_stage_text(NULL); ai_report_text(build_value_trend_report(commodity_df(), paste0("Commodity (", input$commodity %||% "", ")"), "value")); return() }
+    if (report_type == "economic_trend") { ai_loading(FALSE); ai_stage_text(NULL); ai_report_text(build_value_trend_report(economic_df(), paste0("Indicator (", input$economic_indicator %||% "", ")"), "value")); return() }
     cred <- pick_llm_credentials()
-    if (!isTRUE(cred$ok)) { ai_loading(FALSE); return() }
+    if (!isTRUE(cred$ok)) { ai_loading(FALSE); ai_stage_text(NULL); return() }
     context <- build_ai_context(report_type)
     res <- tryCatch(
       withProgress(message = "Multi-agent analysis", value = 0, {
+        ai_stage_text("Running orchestrator, analyst, and editor agents...")
         run_agentic_pipeline(
           report_type = report_type,
           section = input$section %||% "",
@@ -1228,6 +1635,7 @@ server <- function(input, output, session) {
       }
     )
     ai_loading(FALSE)
+    ai_stage_text(NULL)
     if (!isTRUE(res$ok)) {
       if (!is.null(res$orchestrator)) ai_orchestrator_text(res$orchestrator)
       if (!is.null(res$analyst)) ai_analyst_text(res$analyst)
@@ -1236,6 +1644,7 @@ server <- function(input, output, session) {
       set_err(simpleError(res$error %||% "Analysis failed."))
       return()
     }
+    if (!is.null(res$providers_used) && length(res$providers_used) > 0) ai_provider_trace(paste(res$providers_used, collapse = " | "))
     ai_orchestrator_text(res$orchestrator)
     ai_analyst_text(res$analyst)
     rt <- res$rag_trace

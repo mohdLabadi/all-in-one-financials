@@ -1,0 +1,19 @@
+Stock and index levels move with earnings, rates, and sentiment. When comparing day-over-day moves, use the same price field (e.g. adjusted close vs close) and note whether the series is trading days only.
+
+---
+Forex pairs quote the value of the base currency in terms of the quote. A rising EUR/USD means euros buy more dollars. Macro drivers include interest-rate differentials, risk appetite, and surprise data prints.
+
+---
+Commodity futures and spot references differ by contract month and delivery location. Reported “latest” values may be month-end or last settlement; state the source cadence when interpreting moves.
+
+---
+Economic indicators are often revised. CPI and jobs releases can move markets on the surprise versus consensus, not only the level. Treasury yields embed growth and inflation expectations.
+
+---
+News sentiment scores are model-based and noisy. Use them as one signal alongside price action and fundamentals. Headlines may lag fast markets.
+
+---
+Top gainers and losers lists are snapshots; liquidity and halts can distort one-day percent changes. Cross-check unusual movers against corporate actions.
+
+---
+Risk: past performance does not guarantee future results. This workstation combines retrieved notes with live API context; always verify figures against primary sources.

@@ -733,6 +733,34 @@ app_css <- "
   .toolbar-item .toolbar-label { font-size: 0.875rem; font-weight: 600; color: var(--text-muted); white-space: nowrap; margin: 0; }
   .toolbar .form-group { margin: 0 !important; padding: 0 !important; display: inline-flex !important; align-items: center !important; min-height: 36px; }
   .toolbar .form-group label { margin: 0 0.35rem 0 0 !important; font-size: 0.875rem !important; font-weight: 600 !important; color: var(--text-muted) !important; white-space: nowrap !important; }
+  .toolbar .form-group > .checkbox { margin: 0 !important; padding: 0 !important; min-height: 0 !important; width: 100%; }
+  .toolbar .form-group > .checkbox label {
+    display: flex !important;
+    align-items: center !important;
+    flex-wrap: nowrap !important;
+    gap: 0.45rem !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    font-size: 0.875rem !important;
+    font-weight: 600 !important;
+    color: var(--text-muted) !important;
+    white-space: nowrap !important;
+    line-height: 1.25 !important;
+    cursor: pointer;
+    width: auto !important;
+    max-width: 100%;
+  }
+  .toolbar .form-group > .checkbox input[type=\"checkbox\"] {
+    margin: 0 !important;
+    flex-shrink: 0 !important;
+    width: 1.05rem !important;
+    height: 1.05rem !important;
+    min-width: 1.05rem !important;
+    position: static !important;
+    float: none !important;
+    vertical-align: middle !important;
+    accent-color: #0f766e;
+  }
   .toolbar select.form-control { height: 36px !important; min-width: 100px; width: auto !important; max-width: 220px; box-sizing: border-box !important; padding-right: 1.75rem !important; }
   .toolbar .selectize-control { min-width: 100px; max-width: 220px; }
   .toolbar .selectize-input {
@@ -756,19 +784,169 @@ app_css <- "
   }
   .toolbar input[type=\"text\"].form-control { height: 36px !important; width: 130px !important; min-width: 90px; box-sizing: border-box !important; }
   .toolbar .form-control { height: 36px !important; box-sizing: border-box !important; }
-  .toolbar-item input[type=\"checkbox\"] { margin: 0 0.35rem 0 0 !important; flex-shrink: 0; }
   .toolbar .btn { height: 36px !important; line-height: 1 !important; display: inline-flex !important; align-items: center !important; padding: 0 1rem !important; box-sizing: border-box !important; flex-shrink: 0; white-space: nowrap; }
   .toolbar .shiny-download-link { display: inline-flex !important; align-items: center !important; }
   .btn-default { border: 1px solid var(--border) !important; background: #fff !important; color: var(--text) !important; }
-  @media (max-width: 640px) { .toolbar { flex-direction: column; align-items: flex-start; } .toolbar-item { width: 100%; max-width: 100%; } .toolbar-item select.form-control { max-width: 100%; } }
+  .toolbar.toolbar-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 1.25rem; row-gap: 0.75rem; align-items: center; }
+  .toolbar.toolbar-grid .toolbar-item { display: flex; flex-direction: row; align-items: center; gap: 0.5rem; min-width: 0; width: 100%; min-height: 36px; flex-shrink: 0; }
+  .toolbar.toolbar-grid .toolbar-item.toolbar-item-wide { grid-column: 1 / -1; flex-wrap: wrap; }
+  .toolbar.toolbar-grid .toolbar-item.toolbar-grid-download { grid-column: 2; justify-self: end; width: auto; min-width: 0; }
+  .toolbar.toolbar-grid .toolbar-item.toolbar-grid-download .btn { margin-left: 0 !important; }
+  .toolbar.toolbar-grid .toolbar-item span.toolbar-label { flex: 0 0 12rem; text-align: right; }
+  .toolbar.toolbar-grid .toolbar-item.toolbar-item-wide span.toolbar-label { flex: 0 0 12rem; }
+  .toolbar.toolbar-grid .toolbar-item .form-group { flex: 0 0 auto; min-width: 0; justify-content: flex-start; align-items: center !important; }
+  .toolbar.toolbar-grid .toolbar-item .form-group > label { flex: 0 0 12rem !important; text-align: right !important; }
+  .toolbar.toolbar-grid .toolbar-item .checkbox { margin: 0 !important; }
+  .toolbar.toolbar-grid .toolbar-item input[type=\"number\"].form-control,
+  .toolbar.toolbar-grid .toolbar-item input[type=\"text\"].form-control,
+  .toolbar.toolbar-grid .toolbar-item .form-control:not(select) { width: 132px !important; min-width: 132px !important; max-width: 132px !important; flex-shrink: 0; box-sizing: border-box !important; }
+  .toolbar.toolbar-grid .toolbar-item select.form-control,
+  .toolbar.toolbar-grid .toolbar-item .selectize-control { width: 132px !important; min-width: 132px !important; max-width: 132px !important; flex-shrink: 0; }
+  .toolbar.toolbar-grid .toolbar-item.toolbar-item-wide select.form-control,
+  .toolbar.toolbar-grid .toolbar-item.toolbar-item-wide .selectize-control { width: auto !important; min-width: 200px !important; max-width: min(100%, 320px) !important; flex: 1 1 auto; }
+  .toolbar.toolbar-grid .toolbar-item .btn { margin-left: auto; }
+  .toolbar.toolbar-stock-toolbar {
+    --stock-label-w: 14rem;
+    --stock-input-w: 132px;
+    --stock-cell-gap: 0.5rem;
+    display: flex !important;
+    flex-direction: column !important;
+    flex-wrap: nowrap !important;
+    align-items: stretch !important;
+    gap: 0.75rem !important;
+  }
+  .toolbar.toolbar-stock-toolbar .toolbar-pair-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    column-gap: 1.25rem;
+    align-items: start;
+  }
+  .toolbar.toolbar-stock-toolbar .toolbar-item.toolbar-item-wide {
+    display: grid;
+    grid-template-columns: var(--stock-label-w) minmax(180px, 320px);
+    column-gap: var(--stock-cell-gap);
+    align-items: center;
+    width: 100%;
+    min-height: 36px;
+  }
+  .toolbar.toolbar-stock-toolbar .toolbar-item.toolbar-item-wide span.toolbar-label {
+    grid-column: 1;
+    text-align: left;
+    margin: 0;
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text-muted);
+  }
+  .toolbar.toolbar-stock-toolbar .toolbar-item.toolbar-item-wide .form-group {
+    grid-column: 2;
+    margin: 0 !important;
+    padding: 0 !important;
+    display: flex !important;
+    align-items: center !important;
+    min-height: 36px;
+  }
+  .toolbar.toolbar-stock-toolbar .toolbar-item.toolbar-item-wide select.form-control,
+  .toolbar.toolbar-stock-toolbar .toolbar-item.toolbar-item-wide .selectize-control {
+    width: auto !important;
+    min-width: 180px !important;
+    max-width: min(100%, 320px) !important;
+  }
+  .toolbar.toolbar-stock-toolbar .toolbar-pair-row .toolbar-item.toolbar-field {
+    display: grid;
+    grid-template-columns: var(--stock-label-w) var(--stock-input-w);
+    column-gap: var(--stock-cell-gap);
+    align-items: center;
+    width: 100%;
+    min-width: 0;
+    min-height: 36px;
+  }
+  .toolbar.toolbar-stock-toolbar .toolbar-pair-row .toolbar-item.toolbar-field .form-group {
+    display: contents !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+  .toolbar.toolbar-stock-toolbar .toolbar-pair-row .toolbar-item.toolbar-field .form-group > label {
+    grid-column: 1;
+    grid-row: 1;
+    text-align: left !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    font-size: 0.875rem !important;
+    font-weight: 600 !important;
+    color: var(--text-muted) !important;
+    white-space: normal !important;
+    line-height: 1.25 !important;
+    max-width: var(--stock-label-w);
+    justify-self: start;
+    align-self: center;
+  }
+  .toolbar.toolbar-stock-toolbar .toolbar-pair-row .toolbar-item.toolbar-field .form-group > .checkbox {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: start;
+    align-self: center;
+    margin: 0 !important;
+    width: 100%;
+    min-width: 0;
+  }
+  .toolbar.toolbar-stock-toolbar .toolbar-pair-row .toolbar-item.toolbar-field input[type=\"number\"].form-control,
+  .toolbar.toolbar-stock-toolbar .toolbar-pair-row .toolbar-item.toolbar-field input[type=\"text\"].form-control {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: start;
+    width: var(--stock-input-w) !important;
+    min-width: var(--stock-input-w) !important;
+    max-width: var(--stock-input-w) !important;
+    box-sizing: border-box !important;
+  }
+  .toolbar.toolbar-stock-toolbar .toolbar-item-spacer {
+    display: grid;
+    grid-template-columns: var(--stock-label-w) var(--stock-input-w);
+    column-gap: var(--stock-cell-gap);
+    min-height: 36px;
+    visibility: hidden;
+    pointer-events: none;
+  }
+  .toolbar.toolbar-stock-toolbar .toolbar-download-cell {
+    display: grid !important;
+    grid-template-columns: var(--stock-label-w) var(--stock-input-w);
+    column-gap: var(--stock-cell-gap);
+    align-items: center;
+    width: 100%;
+    min-width: 0;
+    min-height: 36px;
+  }
+  .toolbar.toolbar-stock-toolbar .toolbar-download-cell .shiny-download-link {
+    grid-column: 2;
+    justify-self: end;
+    margin: 0 !important;
+  }
+  .toolbar.toolbar-stock-toolbar .toolbar-download-cell .btn { margin-left: 0 !important; }
+  @media (max-width: 640px) { .toolbar:not(.toolbar-grid):not(.toolbar-stock-toolbar) { flex-direction: column; align-items: flex-start; } .toolbar.toolbar-grid { grid-template-columns: 1fr; } .toolbar.toolbar-stock-toolbar .toolbar-pair-row { grid-template-columns: 1fr; } .toolbar.toolbar-grid .toolbar-item.toolbar-grid-download { grid-column: 1; justify-self: stretch; width: 100%; } .toolbar-item { width: 100%; max-width: 100%; } .toolbar-item select.form-control { max-width: 100%; } .toolbar.toolbar-grid .toolbar-item span.toolbar-label, .toolbar.toolbar-grid .toolbar-item .form-group > label { flex-basis: auto !important; max-width: none !important; text-align: left !important; overflow: visible !important; text-overflow: unset !important; } .toolbar.toolbar-grid .toolbar-item input[type=\"number\"].form-control, .toolbar.toolbar-grid .toolbar-item input[type=\"text\"].form-control, .toolbar.toolbar-grid .toolbar-item .form-control:not(select), .toolbar.toolbar-grid .toolbar-item select.form-control, .toolbar.toolbar-grid .toolbar-item .selectize-control { width: 100% !important; min-width: 0 !important; max-width: 100% !important; } .toolbar.toolbar-grid .toolbar-item.toolbar-item-wide select.form-control, .toolbar.toolbar-grid .toolbar-item.toolbar-item-wide .selectize-control { max-width: 100% !important; } .toolbar.toolbar-stock-toolbar .toolbar-item.toolbar-item-wide { grid-template-columns: 1fr !important; } .toolbar.toolbar-stock-toolbar .toolbar-pair-row .toolbar-item.toolbar-field { display: flex !important; flex-direction: column !important; align-items: stretch !important; gap: 0.35rem !important; min-height: 0 !important; } .toolbar.toolbar-stock-toolbar .toolbar-pair-row .toolbar-item.toolbar-field .form-group { display: flex !important; flex-direction: column !important; align-items: flex-start !important; width: 100% !important; } .toolbar.toolbar-stock-toolbar .toolbar-pair-row .toolbar-item.toolbar-field .form-group > label { grid-column: unset !important; grid-row: unset !important; max-width: 100% !important; } .toolbar.toolbar-stock-toolbar .toolbar-pair-row .toolbar-item.toolbar-field .form-group > .checkbox { grid-column: unset !important; grid-row: unset !important; width: 100% !important; } .toolbar.toolbar-stock-toolbar .toolbar-pair-row .toolbar-item.toolbar-field input[type=\"number\"].form-control, .toolbar.toolbar-stock-toolbar .toolbar-pair-row .toolbar-item.toolbar-field input[type=\"text\"].form-control { grid-column: unset !important; grid-row: unset !important; width: 100% !important; max-width: 100% !important; min-width: 0 !important; } .toolbar.toolbar-stock-toolbar .toolbar-item-spacer { display: none !important; } .toolbar.toolbar-stock-toolbar .toolbar-download-cell { grid-template-columns: 1fr !important; } .toolbar.toolbar-stock-toolbar .toolbar-download-cell .shiny-download-link { grid-column: 1 !important; justify-self: stretch !important; } .toolbar.toolbar-stock-toolbar .toolbar-download-cell .btn { width: 100% !important; justify-content: center !important; } .toolbar.toolbar-stock-toolbar .toolbar-item.toolbar-item-wide select.form-control, .toolbar.toolbar-stock-toolbar .toolbar-item.toolbar-item-wide .selectize-control { max-width: 100% !important; width: 100% !important; } }
   .ai-reporter-card { background: linear-gradient(145deg, #fff 0%, #f0fdfa 100%); border: 2px solid var(--accent); border-radius: 16px; padding: 2rem; margin-bottom: 1.5rem; box-shadow: 0 4px 20px rgba(15,118,110,.12); }
   .ai-reporter-card .ai-title { font-size: 1.5rem; font-weight: 800; color: var(--accent); margin-bottom: 0.5rem; }
   .ai-reporter-connect { background: #f8fafc; border: 2px dashed var(--border); border-radius: 12px; padding: 1.5rem; margin-top: 1rem; }
   .ai-report-output { white-space: pre-wrap; font-size: 0.9rem; line-height: 1.6; padding: 1rem; background: #f8fafc; border-radius: 8px; border-left: 4px solid var(--accent); }
-  .agent-pipeline { margin-top: 1rem; }
-  .agent-step { background: #f8fafc; border: 1px solid var(--border); border-radius: 10px; padding: 0.75rem 1rem; margin-bottom: 0.65rem; }
-  .agent-step summary { font-weight: 700; font-size: 0.82rem; color: var(--accent); cursor: pointer; }
-  .agent-step .agent-body { margin-top: 0.5rem; white-space: pre-wrap; font-size: 0.82rem; line-height: 1.5; color: var(--text); max-height: 280px; overflow-y: auto; }
+  .agent-pipeline { margin-top: 1rem; width: 100%; max-width: 100%; box-sizing: border-box; }
+  .agent-pipeline details.agent-step { width: 100%; max-width: 100%; box-sizing: border-box; display: block; }
+  .agent-step { background: #f8fafc; border: 1px solid var(--border); border-radius: 10px; padding: 0.75rem 1rem; margin-bottom: 0.65rem; width: 100%; max-width: 100%; box-sizing: border-box; }
+  .agent-step summary { font-weight: 700; font-size: 0.82rem; color: var(--accent); cursor: pointer; list-style-position: outside; }
+  .agent-step .agent-body { margin-top: 0.5rem; font-size: 0.82rem; line-height: 1.5; color: var(--text); max-height: 320px; overflow-y: auto; overflow-x: auto; }
+  .agent-body.markdown-body { white-space: normal; word-wrap: break-word; overflow-wrap: break-word; }
+  .agent-body.markdown-body p { margin: 0.4rem 0; }
+  .agent-body.markdown-body p:first-child { margin-top: 0; }
+  .agent-body.markdown-body p:last-child { margin-bottom: 0; }
+  .agent-body.markdown-body h1, .agent-body.markdown-body h2, .agent-body.markdown-body h3, .agent-body.markdown-body h4 { margin: 0.65rem 0 0.35rem 0; font-size: 0.88rem; font-weight: 700; color: var(--text); }
+  .agent-body.markdown-body ul, .agent-body.markdown-body ol { margin: 0.35rem 0 0.35rem 1.15rem; padding: 0; }
+  .agent-body.markdown-body table { border-collapse: collapse; width: 100%; margin: 0.6rem 0; font-size: 0.8rem; table-layout: fixed; }
+  .agent-body.markdown-body th, .agent-body.markdown-body td { border: 1px solid var(--border); padding: 0.4rem 0.5rem; text-align: left; vertical-align: top; word-wrap: break-word; }
+  .agent-body.markdown-body th { background: #e2e8f0; font-weight: 600; color: var(--text); }
+  .agent-body.markdown-body tbody tr:nth-child(even) { background: rgba(248,250,252,0.9); }
+  .agent-body.markdown-body pre, .agent-body.markdown-body code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+  .agent-body.markdown-body code { background: #f1f5f9; padding: 0.12rem 0.3rem; border-radius: 4px; font-size: 0.85em; }
+  .agent-body.markdown-body pre { white-space: pre-wrap; background: #f1f5f9; padding: 0.55rem 0.65rem; border-radius: 8px; font-size: 0.78rem; margin: 0.5rem 0; overflow-x: auto; }
+  .agent-body.agent-body-plain { white-space: pre-wrap; }
+  .agent-body.agent-body-plain .agent-pre-fallback { margin: 0; font-family: inherit; font-size: 0.82rem; white-space: pre-wrap; word-break: break-word; }
   .empty-state-card { background: #f8fafc; border: 1px dashed var(--border); border-radius: 10px; padding: 0.9rem 1rem; margin-bottom: 0.85rem; }
   .empty-state-card .title { font-weight: 700; font-size: 0.86rem; color: var(--accent); margin-bottom: 0.25rem; }
   .empty-state-card .desc { margin: 0; color: var(--text-muted); font-size: 0.82rem; line-height: 1.45; }
@@ -889,6 +1067,28 @@ server <- function(input, output, session) {
   ai_provider_trace <- reactiveVal(NULL)
   ai_loading <- reactiveVal(FALSE)
 
+  agent_markdown_ui <- function(text) {
+    txt <- paste(as.character(text), collapse = "\n")
+    if (!nzchar(txt)) return(tags$div(class = "agent-body markdown-body"))
+    md <- tryCatch(
+      shiny::markdown(txt),
+      error = function(e) {
+        tryCatch(
+          if (requireNamespace("commonmark", quietly = TRUE)) {
+            htmltools::HTML(commonmark::markdown_html(txt, extensions = TRUE))
+          } else {
+            NULL
+          },
+          error = function(e2) NULL
+        )
+      }
+    )
+    if (is.null(md)) {
+      return(tags$div(class = "agent-body markdown-body agent-body-plain", tags$pre(class = "agent-pre-fallback", txt)))
+    }
+    tags$div(class = "agent-body markdown-body", md)
+  }
+
   clear_err <- function() err_msg(NULL)
   clear_fallback <- function() fallback_msg(NULL)
   set_err <- function(e) err_msg(paste0("Error: ", conditionMessage(e)))
@@ -963,15 +1163,22 @@ server <- function(input, output, session) {
   })
   output$ui_stock_toolbar <- renderUI({
     if (is.null(stock_df()) || nrow(stock_df()) == 0) return(NULL)
-    div(class = "toolbar",
-        div(class = "toolbar-item toolbar-item-wide", span(class = "toolbar-label", "View"), selectInput("stock_days", NULL, choices = c("Last 5 days" = 5, "Last 21 days" = 21, "Last 60 days" = 60, "Last 90 days" = 90), selected = 90)),
-        div(class = "toolbar-item", checkboxInput("stock_show_ma", qmark("MA(20/50)", "Show 20-day and 50-day moving averages."), value = TRUE)),
-        div(class = "toolbar-item", checkboxInput("stock_show_bands", qmark("Bollinger", "Show Bollinger upper/lower volatility bands."), value = FALSE)),
-        div(class = "toolbar-item", numericInput("stock_calc_invest", qmark("Invest $", "How much capital to simulate in the position calculator."), value = 10000, min = 0, step = 100)),
-        div(class = "toolbar-item", numericInput("stock_calc_target", qmark("Target %", "Desired percent move used for projected P/L."), value = 5, min = -100, max = 500, step = 0.5)),
-        div(class = "toolbar-item", numericInput("stock_scn_days", qmark("Scenario days", "Number of future days to project on the chart."), value = 20, min = 1, max = 252, step = 1)),
-        div(class = "toolbar-item", numericInput("stock_scn_drift", qmark("Scenario daily %", "Assumed daily percent change for scenario path."), value = 0.2, min = -10, max = 10, step = 0.1)),
-        div(class = "toolbar-item", downloadButton("download_stock_csv", "Download CSV", class = "btn btn-default")))
+    div(class = "toolbar toolbar-stock-toolbar",
+        div(class = "toolbar-item toolbar-item-wide",
+            span(class = "toolbar-label", "View"),
+            selectInput("stock_days", NULL, choices = c("Last 5 days" = 5, "Last 21 days" = 21, "Last 60 days" = 60, "Last 90 days" = 90), selected = 90)),
+        div(class = "toolbar-pair-row",
+            div(class = "toolbar-item toolbar-field", checkboxInput("stock_show_ma", qmark("MA(20/50)", "Show 20-day and 50-day moving averages."), value = TRUE)),
+            div(class = "toolbar-item toolbar-field", checkboxInput("stock_show_bands", qmark("Bollinger", "Show Bollinger upper/lower volatility bands."), value = FALSE))),
+        div(class = "toolbar-pair-row",
+            div(class = "toolbar-item toolbar-field", numericInput("stock_calc_invest", qmark("Invest $", "How much capital to simulate in the position calculator."), value = 10000, min = 0, step = 100)),
+            div(class = "toolbar-item toolbar-field", numericInput("stock_calc_target", qmark("Target %", "Desired percent move used for projected P/L."), value = 5, min = -100, max = 500, step = 0.5))),
+        div(class = "toolbar-pair-row",
+            div(class = "toolbar-item toolbar-field", numericInput("stock_scn_days", qmark("Scenario days", "Number of future days to project on the chart."), value = 20, min = 1, max = 252, step = 1)),
+            div(class = "toolbar-item toolbar-field", numericInput("stock_scn_drift", qmark("Scenario daily %", "Assumed daily percent change for scenario path."), value = 0.2, min = -10, max = 10, step = 0.1))),
+        div(class = "toolbar-pair-row toolbar-pair-row-download",
+            div(class = "toolbar-item toolbar-item-spacer"),
+            div(class = "toolbar-item toolbar-download-cell", downloadButton("download_stock_csv", "Download CSV", class = "btn btn-default"))))
   })
   output$ui_stock_summary <- renderUI({
     df <- stock_df()
@@ -1292,7 +1499,7 @@ server <- function(input, output, session) {
   })
   output$ui_fx_toolbar <- renderUI({
     if (is.null(fx_df()) || nrow(fx_df()) == 0) return(NULL)
-    div(class = "toolbar",
+    div(class = "toolbar toolbar-grid",
         div(class = "toolbar-item", span(class = "toolbar-label", qmark("Chart points", "How many historical points to display in charts.")), selectInput("fx_points", NULL, choices = c(30, 60, 90), selected = 90)),
         div(class = "toolbar-item", numericInput("fx_calc_amount", qmark("Amount", "Base currency amount for conversion calculator."), value = 1000, min = 0, step = 100)),
         div(class = "toolbar-item", numericInput("fx_calc_shift", qmark("Rate shock %", "One-time percentage shift used in stress calculation."), value = 1, min = -50, max = 50, step = 0.1)),
@@ -1406,7 +1613,7 @@ server <- function(input, output, session) {
   })
   output$ui_commodity_toolbar <- renderUI({
     if (is.null(commodity_df()) || nrow(commodity_df()) == 0) return(NULL)
-    div(class = "toolbar",
+    div(class = "toolbar toolbar-grid",
         div(class = "toolbar-item", span(class = "toolbar-label", qmark("Chart points", "How many commodity observations to display.")), selectInput("commodity_points", NULL, choices = c(30, 60, 90), selected = 60)),
         div(class = "toolbar-item", numericInput("commodity_calc_units", qmark("Units", "Quantity used in notional and P/L scenario calculator."), value = 100, min = 0, step = 1)),
         div(class = "toolbar-item", numericInput("commodity_calc_move", qmark("Price move %", "One-time price change used in scenario notional."), value = 3, min = -80, max = 200, step = 0.5)),
@@ -1617,9 +1824,9 @@ server <- function(input, output, session) {
       if (!loading && !is.null(report) && nzchar(report)) div(class = "card-custom", style = "margin-top: 1rem;", h4("Final brief"), div(class = "ai-report-output", report)) else NULL,
       if (!loading && ((!is.null(orch) && nzchar(orch)) || (!is.null(an) && nzchar(an)) || (!is.null(ragtr) && nzchar(ragtr)))) div(class = "agent-pipeline",
         p(style = "margin: 0 0 0.5rem 0; font-size: 0.8rem; color: var(--text-muted);", "Agent traces (intermediate outputs)"),
-        if (!is.null(orch) && nzchar(orch)) tags$details(class = "agent-step", open = FALSE, tags$summary("1. Orchestrator — plan & gaps"), div(class = "agent-body", orch)) else NULL,
-        if (!is.null(an) && nzchar(an)) tags$details(class = "agent-step", open = FALSE, tags$summary("2. Market Analyst — evidence memo"), div(class = "agent-body", an)) else NULL,
-        if (!is.null(ragtr) && nzchar(ragtr)) tags$details(class = "agent-step", open = FALSE, tags$summary("RAG retrieval (local corpus)"), div(class = "agent-body", ragtr)) else NULL
+        if (!is.null(orch) && nzchar(orch)) tags$details(class = "agent-step", open = FALSE, tags$summary("1. Orchestrator — plan & gaps"), agent_markdown_ui(orch)) else NULL,
+        if (!is.null(an) && nzchar(an)) tags$details(class = "agent-step", open = FALSE, tags$summary("2. Market Analyst — evidence memo"), agent_markdown_ui(an)) else NULL,
+        if (!is.null(ragtr) && nzchar(ragtr)) tags$details(class = "agent-step", open = FALSE, tags$summary("RAG retrieval (local corpus)"), agent_markdown_ui(ragtr)) else NULL
       ) else NULL
     )
   })

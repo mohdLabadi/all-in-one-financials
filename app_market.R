@@ -344,16 +344,12 @@ retrieve_rag_for_report <- function(report_type, section, context, k = 3L) {
   take <- head(ord[sc[ord] > 0L], n = k)
   if (length(take) == 0L) take <- head(ord, n = min(k, length(chunks)))
   sel <- chunks[take]
-  rp <- rag_corpus_path()
-  src_line <- if (!is.na(rp) && nzchar(rp) && file.exists(rp)) {
-    paste0("Corpus file: ", rp)
-  } else {
-    "Corpus: embedded default (place data/rag_market_corpus.txt beside app_market.R to override)"
-  }
-  trace <- paste0("[", seq_along(sel), "] ", substr(gsub("\n", " ", sel), 1L, min(100L, nchar(sel))), "...")
+  trace <- vapply(seq_along(sel), function(i) {
+    paste0("[", i, "]\n", sel[[i]])
+  }, character(1))
   list(
     text = paste(sel, collapse = "\n\n"),
-    trace = paste(c(src_line, trace), collapse = "\n")
+    trace = paste(trace, collapse = "\n\n---\n\n")
   )
 }
 
@@ -733,10 +729,31 @@ app_css <- "
   .toolbar { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0 1.25rem; row-gap: 0.75rem; margin-bottom: 1rem; padding: 0.875rem 1rem; background: var(--bg-card); border-radius: 10px; border: 1px solid var(--border); min-height: 48px; }
   .toolbar-item { display: inline-flex; align-items: center; gap: 0.5rem; flex-shrink: 0; min-height: 36px; }
   .toolbar-item-wide select.form-control { min-width: 170px; }
+  .toolbar-item-wide .selectize-control { min-width: 170px; }
   .toolbar-item .toolbar-label { font-size: 0.875rem; font-weight: 600; color: var(--text-muted); white-space: nowrap; margin: 0; }
   .toolbar .form-group { margin: 0 !important; padding: 0 !important; display: inline-flex !important; align-items: center !important; min-height: 36px; }
   .toolbar .form-group label { margin: 0 0.35rem 0 0 !important; font-size: 0.875rem !important; font-weight: 600 !important; color: var(--text-muted) !important; white-space: nowrap !important; }
   .toolbar select.form-control { height: 36px !important; min-width: 100px; width: auto !important; max-width: 220px; box-sizing: border-box !important; padding-right: 1.75rem !important; }
+  .toolbar .selectize-control { min-width: 100px; max-width: 220px; }
+  .toolbar .selectize-input {
+    min-height: 36px !important;
+    height: 36px !important;
+    line-height: 1.2 !important;
+    display: flex !important;
+    align-items: center !important;
+    padding: 0 2rem 0 0.65rem !important;
+    box-sizing: border-box !important;
+  }
+  .toolbar .selectize-control.single .selectize-input:after {
+    right: 0.7rem !important;
+    margin-top: -2px !important;
+  }
+  .toolbar .selectize-input > input {
+    margin: 0 !important;
+    padding: 0 !important;
+    min-width: 1px !important;
+    line-height: 1.2 !important;
+  }
   .toolbar input[type=\"text\"].form-control { height: 36px !important; width: 130px !important; min-width: 90px; box-sizing: border-box !important; }
   .toolbar .form-control { height: 36px !important; box-sizing: border-box !important; }
   .toolbar-item input[type=\"checkbox\"] { margin: 0 0.35rem 0 0 !important; flex-shrink: 0; }
@@ -1583,11 +1600,11 @@ server <- function(input, output, session) {
     needs_ai <- input$ai_report_type %||% "" %in% c("brief", "stock", "movers", "news", "forex_brief", "forex_snapshot", "commodity_brief", "commodity_snapshot", "economic_brief", "economic_snapshot")
     providers <- if (has_key) unique(vapply(cred$creds, function(z) z$provider, character(1))) else character(0)
     prov_lab <- if (length(providers) > 0) paste0(" (available: ", paste(providers, collapse = ", "), ")") else ""
-    if (needs_ai && !has_key) return(div(class = "ai-reporter-card", div(class = "ai-title", "Multi-agent AI analysis"), div(class = "ai-desc", "LLM-backed reports need a key in .env (Ollama Cloud preferred, or OpenAI)."), div(class = "ai-reporter-connect", p(style = "margin: 0; font-size: 0.9rem;", "Ollama Cloud: ", tags$a(href = "https://ollama.com/settings", target = "_blank", "ollama.com/settings"), ". OpenAI: OPENAI_API_KEY=sk-... in .env."))))
+    if (needs_ai && !has_key) return(div(class = "ai-reporter-card", div(class = "ai-title", "Multi-agent AI analysis"), div(class = "ai-desc", "Generate a concise market summary from the data you have fetched, including key moves, context, and takeaways in plain language. To enable AI reports, add an API key in your .env file."), div(class = "ai-reporter-connect", p(style = "margin: 0; font-size: 0.9rem;", "Ollama Cloud: ", tags$a(href = "https://ollama.com/settings", target = "_blank", "ollama.com/settings"), ". OpenAI: OPENAI_API_KEY=sk-... in .env."))))
     tagList(
       div(class = "ai-reporter-card",
         div(class = "ai-title", "Multi-agent AI analysis"),
-        div(class = "ai-desc", paste0("Orchestrator → Market Analyst → Lead Editor run in sequence for each AI report", prov_lab, ". Context includes RAG notes from ", tags$code("data/rag_market_corpus.txt"), " (keyword retrieval) plus your fetched data. Trend reports use fetched data only (no LLM).")),
+        div(class = "ai-desc", paste0("Create a user-friendly market brief from the section data you fetched", prov_lab, ". The report highlights important trends, possible drivers, and what to watch next. Choose a report type, then click Generate report. You can view the full RAG retrieval details by scrolling down to the RAG retrieval section.")),
         selectInput("ai_report_type", "Report type", choices = ch, selected = if (!is.null(input$ai_report_type) && input$ai_report_type %in% ch) input$ai_report_type else ch[1]),
         if (needs_ai && has_key) {
           div(class = "ai-reporter-connect", style = "margin-top: 0.5rem;",

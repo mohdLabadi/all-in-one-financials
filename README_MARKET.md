@@ -103,7 +103,7 @@ See `PROCESS_DIAGRAM.md` (root) for the digital diagram.
 
 ### A) System Architecture
 
-- **Frontend/UI**: `app_market.R` Shiny UI with section-based workflow and AI Reporter panel.
+- **Frontend/UI**: `app.py` Shiny for Python UI (top nav + section-based workflow) with an AI Reporter panel, Plotly charts, and a `www/styles.css` design system.
 - **Data layer**: Alpha Vantage fetch + normalization functions (`av_*` helpers).
 - **AI layer**: 3-agent orchestration pipeline + RAG retrieval context.
 - **Resilience layer**:
@@ -163,16 +163,18 @@ Pipeline:
 
 ### F) Packages and Runtime
 
-Required packages:
+Python 3.11+ with a virtual environment. Required packages (see `requirements.txt`):
 
-```r
-install.packages(c("shiny","httr2","httr","jsonlite","ggplot2","DT","dplyr"))
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
 ### G) File Structure
 
-- `app_market.R` - main app and core logic
-- `run_market.R` - launcher
+- `app.py` - main app: Alpha Vantage layer, LLM/RAG/agent pipeline, UI, and server logic
+- `www/styles.css` - design system (nav, cards, charts, tables)
 - `data/rag_market_corpus.txt` - RAG corpus
 - `PROCESS_DIAGRAM.md` - process diagram
 - `writeup.txt` - submission narrative
@@ -189,8 +191,9 @@ OPENAI_API_KEY=...         # optional
 
 2. Run:
 
-```r
-source("run_market.R")
+```bash
+source .venv/bin/activate
+shiny run app.py --reload --launch-browser
 ```
 
 3. In app:

@@ -103,7 +103,7 @@ See `PROCESS_DIAGRAM.md` (root) for the digital diagram.
 
 ### A) System Architecture
 
-- **Frontend/UI**: `app.py` Shiny for Python UI (top nav + section-based workflow) with an AI Reporter panel, Plotly charts, and a `www/styles.css` design system.
+- **Frontend/UI**: `market/layout.py` Shiny for Python UI (top nav + section-based workflow) with an AI Reporter panel, Plotly charts, and a `static/styles.css` design system.
 - **Data layer**: Alpha Vantage fetch + normalization functions (`av_*` helpers).
 - **AI layer**: 3-agent orchestration pipeline + RAG retrieval context.
 - **Resilience layer**:
@@ -173,11 +173,20 @@ pip install -r requirements.txt
 
 ### G) File Structure
 
-- `app.py` - main app: Alpha Vantage layer, LLM/RAG/agent pipeline, UI, and server logic
-- `www/styles.css` - design system (nav, cards, charts, tables)
+- `app.py` - entry point: builds the ASGI `app` object from `market/layout.py` + `market/server.py`
+- `market/config.py` - env/API-key loading
+- `market/alphavantage.py` - Alpha Vantage fetch + normalization, with rate-limit cache fallback
+- `market/llm.py` - LLM chat client (Ollama Cloud primary, OpenAI fallback)
+- `market/rag.py` - RAG corpus loading + keyword retrieval
+- `market/agents.py` - 3-agent pipeline (Orchestrator, Analyst, Editor) + section/report labels
+- `market/trend_reports.py` - computed (non-AI) day/week/month/year trend reports
+- `market/charts.py` - shared Plotly color palette + layout styling
+- `market/ui_helpers.py` - small reusable UI components and dataframe/column helpers
+- `market/layout.py` - top-level page layout (`app_ui`)
+- `market/server.py` - reactive server logic for every section + the AI reporter
+- `static/styles.css` - design system (nav, cards, charts, tables)
 - `data/rag_market_corpus.txt` - RAG corpus
 - `PROCESS_DIAGRAM.md` - process diagram
-- `writeup.txt` - submission narrative
 
 ### H) Usage Instructions
 

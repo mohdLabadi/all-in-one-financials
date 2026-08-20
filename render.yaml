@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: daily-market-analysis
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.0
+      - key: ALPHAVANTAGE_API_KEY
+        sync: false
+      - key: OLLAMA_CLOUD_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false

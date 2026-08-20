@@ -4,7 +4,7 @@
 
 - **GitHub repository main page**: `<PASTE GITHUB REPO MAIN PAGE LINK>`
 - **Live app link (deployed and accessible)**: `<PASTE LIVE APP LINK>`
-- **Deployment platform**: Posit Connect / Posit Cloud / DigitalOcean (fill in)
+- **Deployment platform**: Render (see `render.yaml`)
 - **Access / password (if applicable)**: Public or `<PASTE PASSWORD>`
 
 ---
